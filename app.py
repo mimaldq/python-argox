@@ -10,12 +10,12 @@ import time
 import signal
 import logging
 import asyncio
+import re
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict, List, Tuple, Any
 
 import aiohttp
-import aiofiles
 import yaml
 import psutil
 from flask import Flask, request, send_file, Response, jsonify
@@ -67,6 +67,7 @@ logger.info(f"{FILE_PATH} created or already exists")
 monitor_process = None
 processes = []
 argo_domain_cache = None
+http_session = None
 
 class ProcessManager:
     """进程管理器"""
@@ -116,15 +117,17 @@ config_path = file_path / 'config.json'
 tunnel_json_path = file_path / 'tunnel.json'
 tunnel_yaml_path = file_path / 'tunnel.yml'
 
-# 异步HTTP客户端会话
-http_session: Optional[aiohttp.ClientSession] = None
-
 async def get_http_session() -> aiohttp.ClientSession:
     """获取或创建HTTP会话"""
     global http_session
     if http_session is None or http_session.closed:
         timeout = aiohttp.ClientTimeout(total=30)
-        http_session = aiohttp.ClientSession(timeout=timeout)
+        connector = aiohttp.TCPConnector(limit=100)
+        http_session = aiohttp.ClientSession(
+            timeout=timeout,
+            connector=connector,
+            headers={'User-Agent': 'Mozilla/5.0'}
+        )
     return http_session
 
 async def cleanup_http_session() -> None:
@@ -140,8 +143,8 @@ async def delete_nodes() -> None:
         return
     
     try:
-        async with aiofiles.open(sub_path, 'r', encoding='utf-8') as f:
-            file_content = await f.read()
+        with open(sub_path, 'r', encoding='utf-8') as f:
+            file_content = f.read()
         
         decoded = base64.b64decode(file_content).decode('utf-8')
         protocols = ['vless://', 'vmess://', 'trojan://', 'hysteria2://', 'tuic://']
@@ -171,7 +174,7 @@ async def cleanup_old_files() -> None:
     try:
         for file in file_path.iterdir():
             try:
-                if file.is_file():
+                if file.is_file() and file.name not in ['app.log', '.env']:
                     file.unlink()
                     logger.debug(f"Deleted old file: {file}")
             except Exception:
@@ -211,7 +214,7 @@ def generate_config() -> None:
                         {"dest": 3002},
                         {"path": "/vless-argo", "dest": 3003},
                         {"path": "/vmess-argo", "dest": 3004},
-                        {"path": "/trojan-argo", "dest": 3005}
+                        {"path": "/trojan-argo", dest: 3005}
                     ]
                 },
                 "streamSettings": {
@@ -331,9 +334,13 @@ async def download_file(url: str, filepath: Path) -> bool:
         async with session.get(url) as response:
             response.raise_for_status()
             
-            async with aiofiles.open(filepath, 'wb') as f:
-                async for chunk in response.content.iter_chunked(8192):
-                    await f.write(chunk)
+            # 使用普通文件写入，因为aiofiles不在requirements中
+            with open(filepath, 'wb') as f:
+                while True:
+                    chunk = await response.content.read(8192)
+                    if not chunk:
+                        break
+                    f.write(chunk)
             
             # 设置可执行权限
             filepath.chmod(0o755)
@@ -443,8 +450,8 @@ use_gitee_to_upgrade: false
 use_ipv6_country_code: false
 uuid: {UUID}"""
             
-            async with aiofiles.open(file_path / 'config.yaml', 'w', encoding='utf-8') as f:
-                await f.write(config_yaml)
+            with open(file_path / 'config.yaml', 'w', encoding='utf-8') as f:
+                f.write(config_yaml)
             
             # 运行哪吒v1
             cmd = [str(php_path), "-c", str(file_path / 'config.yaml')]
@@ -554,8 +561,8 @@ async def download_monitor_script() -> bool:
             response.raise_for_status()
             content = await response.read()
         
-        async with aiofiles.open(monitor_path, 'wb') as f:
-            await f.write(content)
+        with open(monitor_path, 'wb') as f:
+            f.write(content)
         
         monitor_path.chmod(0o755)
         logger.info("Monitor script downloaded successfully")
@@ -642,10 +649,9 @@ async def extract_domains() -> Optional[str]:
                 logger.error("boot.log not found")
                 return None
             
-            async with aiofiles.open(boot_log_path, 'r', encoding='utf-8') as f:
-                content = await f.read()
+            with open(boot_log_path, 'r', encoding='utf-8') as f:
+                content = f.read()
             
-            import re
             domains = re.findall(r'https?://([^ ]*trycloudflare\.com)', content)
             
             if domains:
@@ -746,8 +752,8 @@ trojan://{UUID}@{CFIP}:{CFPORT}?security=tls&sni={argo_domain}&fp=firefox&type=w
     logger.info(f"Subscription content (base64): {encoded_content}")
     
     # 保存到文件
-    async with aiofiles.open(sub_path, 'w', encoding='utf-8') as f:
-        await f.write(encoded_content)
+    with open(sub_path, 'w', encoding='utf-8') as f:
+        f.write(encoded_content)
     logger.info(f"{sub_path} saved successfully")
     
     # 上传节点
@@ -783,8 +789,8 @@ async def upload_nodes():
             return None
         
         try:
-            async with aiofiles.open(list_path, 'r', encoding='utf-8') as f:
-                content = await f.read()
+            with open(list_path, 'r', encoding='utf-8') as f:
+                content = f.read()
             
             protocols = ['vless://', 'vmess://', 'trojan://', 'hysteria2://', 'tuic://']
             nodes = [line for line in content.split('\n') 
@@ -808,7 +814,7 @@ async def upload_nodes():
                     logger.error(f'Upload failed with status code: {response.status}')
                     return None
         except Exception as e:
-            logger.error(f'Failed to upload nodes: {e}")
+            logger.error(f'Failed to upload nodes: {e}')
             return None
     else:
         return None
@@ -844,7 +850,7 @@ async def add_visit_task() -> None:
     """添加自动访问任务"""
     if not AUTO_ACCESS or not PROJECT_URL:
         logger.info("Skipping auto-access task")
-        return None
+        return
     
     session = await get_http_session()
     try:
@@ -877,7 +883,8 @@ def health():
         "services": {
             "xray": web_path.exists(),
             "cloudflared": bot_path.exists(),
-            "monitor": monitor_process is not None and monitor_process.poll() is None
+            "monitor": monitor_process is not None and monitor_process.poll() is None,
+            "sub_file": sub_path.exists()
         }
     })
 
@@ -959,7 +966,7 @@ async def main_async():
     await start_server()
     
     # 启动监控脚本
-    asyncio.create_task(start_monitor())
+    await start_monitor()
     
     # 清理文件
     clean_files()
@@ -985,12 +992,7 @@ def main():
         
         # 启动Flask应用
         logger.info(f"HTTP service running on internal port: {PORT}")
-        from werkzeug.serving import make_server
-        
-        # 使用生产级服务器
-        server = make_server('0.0.0.0', PORT, app, threaded=True)
-        logger.info(f"Server started on http://0.0.0.0:{PORT}")
-        server.serve_forever()
+        app.run(host='0.0.0.0', port=PORT, debug=False, threaded=True)
         
     except KeyboardInterrupt:
         logger.info("Shutting down...")

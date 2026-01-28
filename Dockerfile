@@ -1,4 +1,4 @@
-# ==================== 阶段1: 构建阶段 ====================
+# ==================== 构建阶段 ====================
 FROM python:3.9-slim AS builder
 
 # 安装构建依赖
@@ -14,10 +14,10 @@ WORKDIR /app
 # 复制依赖文件
 COPY requirements.txt .
 
-# 安装Python依赖到用户目录
+# 安装Python依赖
 RUN pip install --no-cache-dir --user -r requirements.txt
 
-# ==================== 阶段2: 运行时阶段 ====================
+# ==================== 运行时阶段 ====================
 FROM python:3.9-slim
 
 # 设置环境变量
@@ -27,7 +27,7 @@ ENV PYTHONUNBUFFERED=1 \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8
 
-# 安装运行时依赖（包括bash, wget, curl等）
+# 安装运行时依赖
 RUN apt-get update && apt-get install -y \
     bash \
     wget \
@@ -38,8 +38,12 @@ RUN apt-get update && apt-get install -y \
     dnsutils \
     ca-certificates \
     tzdata \
+    procps \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+# 设置时区
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
 # 创建非root用户
 RUN groupadd -r appuser && useradd -r -g appuser -s /bin/bash -m appuser
@@ -55,16 +59,12 @@ COPY app.py .
 COPY index.html .
 COPY requirements.txt .
 
-# 复制配置文件和脚本
-COPY *.py ./
-COPY *.html ./
-
-# 创建必要的目录
+# 创建数据目录
 RUN mkdir -p /app/data/tmp
 
 # 设置文件权限
 RUN chown -R appuser:appuser /app && \
-    chmod 755 /app
+    chmod +x /app/app.py
 
 # 设置Python路径
 ENV PATH=/home/appuser/.local/bin:$PATH
@@ -76,5 +76,5 @@ USER appuser
 # 暴露端口
 EXPOSE 7860
 
-# 默认命令 - 直接运行app.py
+# 默认命令
 CMD ["python", "app.py"]

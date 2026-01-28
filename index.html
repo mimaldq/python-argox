@@ -1,0 +1,1072 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Python Applications - A Versatile Programming Language</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        
+        body {
+            background-color: #f8f9fa;
+            color: #333;
+            line-height: 1.6;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 20px;
+        }
+        
+        /* Header Styles */
+        header {
+            background: linear-gradient(135deg, #306998 0%, #4B8BBE 100%);
+            color: white;
+            padding: 25px 0;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .header-content {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        
+        .logo-area {
+            display: flex;
+            align-items: center;
+        }
+        
+        .python-icon {
+            font-size: 3rem;
+            margin-right: 20px;
+            color: #FFD43B;
+        }
+        
+        .logo-text h1 {
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin-bottom: 5px;
+        }
+        
+        .logo-text p {
+            font-size: 1.1rem;
+            opacity: 0.9;
+        }
+        
+        .python-tag {
+            background-color: rgba(255, 212, 59, 0.2);
+            color: #FFD43B;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-weight: 600;
+            font-size: 0.9rem;
+            display: inline-block;
+            margin-top: 5px;
+        }
+        
+        /* Navigation */
+        nav ul {
+            display: flex;
+            list-style: none;
+            flex-wrap: wrap;
+        }
+        
+        nav ul li {
+            margin-left: 20px;
+        }
+        
+        nav ul li a {
+            color: white;
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 1.1rem;
+            padding: 8px 15px;
+            border-radius: 4px;
+            transition: all 0.3s ease;
+        }
+        
+        nav ul li a:hover, nav ul li a.active {
+            background-color: rgba(255, 255, 255, 0.2);
+        }
+        
+        /* Hero Section */
+        .hero {
+            background-color: #e9f2f9;
+            padding: 70px 0;
+            margin-bottom: 40px;
+            border-radius: 0 0 15px 15px;
+        }
+        
+        .hero-content {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 40px;
+        }
+        
+        .hero-text {
+            flex: 1;
+            min-width: 300px;
+        }
+        
+        .hero-text h2 {
+            color: #306998;
+            font-size: 2.8rem;
+            margin-bottom: 20px;
+            line-height: 1.3;
+        }
+        
+        .hero-text p {
+            font-size: 1.3rem;
+            color: #444;
+            margin-bottom: 25px;
+        }
+        
+        .hero-buttons {
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+        
+        .btn {
+            display: inline-block;
+            padding: 14px 28px;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 1.1rem;
+            text-decoration: none;
+            transition: all 0.3s ease;
+            cursor: pointer;
+        }
+        
+        .btn-primary {
+            background-color: #306998;
+            color: white;
+            border: 2px solid #306998;
+        }
+        
+        .btn-primary:hover {
+            background-color: #25557c;
+            border-color: #25557c;
+            transform: translateY(-3px);
+            box-shadow: 0 7px 14px rgba(48, 105, 152, 0.2);
+        }
+        
+        .btn-secondary {
+            background-color: transparent;
+            color: #306998;
+            border: 2px solid #306998;
+        }
+        
+        .btn-secondary:hover {
+            background-color: rgba(48, 105, 152, 0.1);
+            transform: translateY(-3px);
+        }
+        
+        .hero-image {
+            flex: 1;
+            min-width: 300px;
+            text-align: center;
+        }
+        
+        .hero-image img {
+            max-width: 100%;
+            border-radius: 10px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+        }
+        
+        /* Main Content */
+        .content-section {
+            background-color: white;
+            border-radius: 10px;
+            padding: 40px;
+            margin-bottom: 40px;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.05);
+        }
+        
+        .section-title {
+            color: #306998;
+            font-size: 2.2rem;
+            margin-bottom: 25px;
+            padding-bottom: 15px;
+            border-bottom: 3px solid #FFD43B;
+            display: inline-block;
+        }
+        
+        .section-content {
+            font-size: 1.1rem;
+            color: #444;
+        }
+        
+        .section-content p {
+            margin-bottom: 20px;
+        }
+        
+        /* Application Cards */
+        .applications-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+            gap: 30px;
+            margin: 30px 0;
+        }
+        
+        .application-card {
+            background-color: white;
+            border-radius: 10px;
+            overflow: hidden;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.08);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+            height: 100%;
+            border-top: 4px solid #306998;
+        }
+        
+        .application-card:hover {
+            transform: translateY(-10px);
+            box-shadow: 0 15px 30px rgba(0, 0, 0, 0.1);
+        }
+        
+        .card-header {
+            padding: 25px 25px 15px;
+            background-color: #f8f9fa;
+            display: flex;
+            align-items: center;
+        }
+        
+        .card-icon {
+            font-size: 2.5rem;
+            margin-right: 15px;
+            color: #306998;
+        }
+        
+        .card-title {
+            color: #306998;
+            font-size: 1.6rem;
+            font-weight: 700;
+        }
+        
+        .card-content {
+            padding: 0 25px 25px;
+        }
+        
+        .card-content p {
+            margin-bottom: 15px;
+        }
+        
+        .tech-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-top: 15px;
+        }
+        
+        .tech-tag {
+            background-color: #e9f2f9;
+            color: #306998;
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-size: 0.9rem;
+            font-weight: 600;
+        }
+        
+        /* Statistics */
+        .stats-container {
+            display: flex;
+            justify-content: space-around;
+            flex-wrap: wrap;
+            margin: 40px 0;
+            gap: 20px;
+        }
+        
+        .stat-item {
+            text-align: center;
+            padding: 25px 15px;
+            min-width: 200px;
+            background-color: #f0f7ff;
+            border-radius: 10px;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.05);
+        }
+        
+        .stat-number {
+            font-size: 3rem;
+            font-weight: 700;
+            color: #306998;
+            margin-bottom: 10px;
+        }
+        
+        .stat-label {
+            font-size: 1.1rem;
+            color: #555;
+            font-weight: 600;
+        }
+        
+        /* Code Example */
+        .code-example {
+            background-color: #2b2b2b;
+            color: #f8f8f2;
+            border-radius: 8px;
+            padding: 25px;
+            margin: 30px 0;
+            font-family: 'Courier New', monospace;
+            overflow-x: auto;
+        }
+        
+        .code-example .keyword {
+            color: #ff79c6;
+        }
+        
+        .code-example .function {
+            color: #50fa7b;
+        }
+        
+        .code-example .string {
+            color: #f1fa8c;
+        }
+        
+        .code-example .comment {
+            color: #6272a4;
+        }
+        
+        .code-example .builtin {
+            color: #8be9fd;
+        }
+        
+        /* Framework Logos */
+        .framework-logos {
+            display: flex;
+            justify-content: space-around;
+            flex-wrap: wrap;
+            gap: 30px;
+            margin: 40px 0;
+        }
+        
+        .framework-logo {
+            text-align: center;
+            padding: 20px;
+            min-width: 150px;
+        }
+        
+        .framework-logo i {
+            font-size: 3.5rem;
+            color: #306998;
+            margin-bottom: 15px;
+        }
+        
+        .framework-logo h4 {
+            color: #306998;
+            font-size: 1.3rem;
+        }
+        
+        /* Footer */
+        footer {
+            background-color: #1a2b4c;
+            color: white;
+            padding: 50px 0 25px;
+            margin-top: 50px;
+        }
+        
+        .footer-content {
+            display: flex;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            margin-bottom: 30px;
+        }
+        
+        .footer-section {
+            flex: 1;
+            min-width: 250px;
+            padding: 0 20px;
+            margin-bottom: 30px;
+        }
+        
+        .footer-section h3 {
+            font-size: 1.5rem;
+            margin-bottom: 20px;
+            color: #FFD43B;
+        }
+        
+        .footer-section p {
+            opacity: 0.8;
+            margin-bottom: 15px;
+        }
+        
+        .footer-links {
+            list-style: none;
+        }
+        
+        .footer-links li {
+            margin-bottom: 10px;
+        }
+        
+        .footer-links a {
+            color: white;
+            text-decoration: none;
+            opacity: 0.8;
+            transition: opacity 0.3s;
+        }
+        
+        .footer-links a:hover {
+            opacity: 1;
+        }
+        
+        .social-icons {
+            display: flex;
+            margin-top: 20px;
+        }
+        
+        .social-icons a {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 40px;
+            height: 40px;
+            background-color: rgba(255, 255, 255, 0.1);
+            color: white;
+            border-radius: 50%;
+            margin-right: 10px;
+            text-decoration: none;
+            transition: all 0.3s ease;
+        }
+        
+        .social-icons a:hover {
+            background-color: #306998;
+            transform: translateY(-3px);
+        }
+        
+        .copyright {
+            text-align: center;
+            padding-top: 25px;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+            opacity: 0.7;
+        }
+        
+        /* Responsive Design */
+        @media (max-width: 992px) {
+            .hero-text h2 {
+                font-size: 2.3rem;
+            }
+        }
+        
+        @media (max-width: 768px) {
+            .header-content {
+                flex-direction: column;
+                text-align: center;
+            }
+            
+            .logo-area {
+                margin-bottom: 20px;
+            }
+            
+            nav ul {
+                justify-content: center;
+            }
+            
+            nav ul li {
+                margin: 0 10px 10px;
+            }
+            
+            .hero-content {
+                flex-direction: column;
+            }
+            
+            .section-title {
+                font-size: 1.8rem;
+            }
+            
+            .applications-container {
+                grid-template-columns: 1fr;
+            }
+        }
+        
+        /* Back to top button */
+        .back-to-top {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            background-color: #306998;
+            color: white;
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+            text-decoration: none;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+            z-index: 100;
+            opacity: 0;
+            transition: all 0.3s ease;
+        }
+        
+        .back-to-top.visible {
+            opacity: 1;
+        }
+        
+        .back-to-top:hover {
+            background-color: #25557c;
+            transform: translateY(-5px);
+        }
+    </style>
+</head>
+<body>
+    <!-- Header Section -->
+    <header>
+        <div class="container">
+            <div class="header-content">
+                <div class="logo-area">
+                    <i class="fab fa-python python-icon"></i>
+                    <div class="logo-text">
+                        <h1>Python Applications</h1>
+                        <p>The versatile programming language powering the modern world</p>
+                        <div class="python-tag">Simple. Powerful. Versatile.</div>
+                    </div>
+                </div>
+                <nav>
+                    <ul>
+                        <li><a href="#home" class="active">Home</a></li>
+                        <li><a href="#applications">Applications</a></li>
+                        <li><a href="#frameworks">Frameworks</a></li>
+                        <li><a href="#stats">Statistics</a></li>
+                        <li><a href="#resources">Resources</a></li>
+                    </ul>
+                </nav>
+            </div>
+        </div>
+    </header>
+
+    <!-- Hero Section -->
+    <section class="hero" id="home">
+        <div class="container">
+            <div class="hero-content">
+                <div class="hero-text">
+                    <h2>Python: The Language of Modern Technology</h2>
+                    <p>Python is a high-level, interpreted programming language known for its simplicity, readability, and versatility. It's used by beginners and experts alike to build everything from simple scripts to complex machine learning models.</p>
+                    <p>With its clean syntax and vast ecosystem of libraries, Python has become one of the most popular programming languages worldwide, driving innovation across multiple industries.</p>
+                    <div class="hero-buttons">
+                        <a href="#applications" class="btn btn-primary">Explore Applications</a>
+                        <a href="#code" class="btn btn-secondary">See Code Examples</a>
+                    </div>
+                </div>
+                <div class="hero-image">
+                    <img src="https://images.unsplash.com/photo-1526379879527-8559ecfcaec9?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=1170&q=80" alt="Python Code on Screen">
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Main Content -->
+    <main class="container">
+        <!-- Applications Section -->
+        <section class="content-section" id="applications">
+            <h2 class="section-title">Python Applications Across Industries</h2>
+            <div class="section-content">
+                <p>Python's versatility makes it suitable for a wide range of applications. Here are some of the key areas where Python shines:</p>
+                
+                <div class="applications-container">
+                    <div class="application-card">
+                        <div class="card-header">
+                            <i class="fas fa-chart-line card-icon"></i>
+                            <h3 class="card-title">Data Science & Analytics</h3>
+                        </div>
+                        <div class="card-content">
+                            <p>Python is the leading language for data science, with powerful libraries like NumPy, Pandas, and Matplotlib for data manipulation, analysis, and visualization.</p>
+                            <p>Used by data scientists at companies like Google, Facebook, and Netflix to extract insights from large datasets and build predictive models.</p>
+                            <div class="tech-tags">
+                                <span class="tech-tag">Pandas</span>
+                                <span class="tech-tag">NumPy</span>
+                                <span class="tech-tag">Matplotlib</span>
+                                <span class="tech-tag">SciPy</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="application-card">
+                        <div class="card-header">
+                            <i class="fas fa-brain card-icon"></i>
+                            <h3 class="card-title">Machine Learning & AI</h3>
+                        </div>
+                        <div class="card-content">
+                            <p>Python dominates the machine learning landscape with frameworks like TensorFlow, PyTorch, and Scikit-learn that simplify building and training complex AI models.</p>
+                            <p>From recommendation systems to natural language processing and computer vision, Python powers cutting-edge AI applications.</p>
+                            <div class="tech-tags">
+                                <span class="tech-tag">TensorFlow</span>
+                                <span class="tech-tag">PyTorch</span>
+                                <span class="tech-tag">Scikit-learn</span>
+                                <span class="tech-tag">Keras</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="application-card">
+                        <div class="card-header">
+                            <i class="fas fa-globe card-icon"></i>
+                            <h3 class="card-title">Web Development</h3>
+                        </div>
+                        <div class="card-content">
+                            <p>Python powers some of the world's most popular websites with frameworks like Django and Flask that enable rapid development of scalable web applications.</p>
+                            <p>Instagram, Pinterest, and Spotify are just a few examples of large-scale web applications built with Python.</p>
+                            <div class="tech-tags">
+                                <span class="tech-tag">Django</span>
+                                <span class="tech-tag">Flask</span>
+                                <span class="tech-tag">FastAPI</span>
+                                <span class="tech-tag">Pyramid</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="application-card">
+                        <div class="card-header">
+                            <i class="fas fa-robot card-icon"></i>
+                            <h3 class="card-title">Automation & Scripting</h3>
+                        </div>
+                        <div class="card-content">
+                            <p>Python excels at automating repetitive tasks, from file management to web scraping and system administration, saving time and reducing human error.</p>
+                            <p>Its simple syntax and extensive standard library make it ideal for writing scripts that automate workflows across different platforms.</p>
+                            <div class="tech-tags">
+                                <span class="tech-tag">Selenium</span>
+                                <span class="tech-tag">BeautifulSoup</span>
+                                <span class="tech-tag">Automation</span>
+                                <span class="tech-tag">Scripting</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="application-card">
+                        <div class="card-header">
+                            <i class="fas fa-gamepad card-icon"></i>
+                            <h3 class="card-title">Game Development</h3>
+                        </div>
+                        <div class="card-content">
+                            <p>While not as common as C++ for AAA games, Python is used for game scripting, prototyping, and educational game development with libraries like Pygame.</p>
+                            <p>Popular games like Civilization IV and Battlefield 2 use Python for scripting and modding capabilities.</p>
+                            <div class="tech-tags">
+                                <span class="tech-tag">Pygame</span>
+                                <span class="tech-tag">Panda3D</span>
+                                <span class="tech-tag">Godot</span>
+                                <span class="tech-tag">Prototyping</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="application-card">
+                        <div class="card-header">
+                            <i class="fas fa-flask card-icon"></i>
+                            <h3 class="card-title">Scientific Computing</h3>
+                        </div>
+                        <div class="card-content">
+                            <p>Python is widely used in scientific research for simulations, data analysis, and visualization in fields like physics, biology, astronomy, and engineering.</p>
+                            <p>Libraries like SciPy and specialized tools like Astropy and Biopython make Python a powerful tool for scientific computing.</p>
+                            <div class="tech-tags">
+                                <span class="tech-tag">SciPy</span>
+                                <span class="tech-tag">Astropy</span>
+                                <span class="tech-tag">Biopython</span>
+                                <span class="tech-tag">Simulations</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+        
+        <!-- Statistics Section -->
+        <section class="content-section" id="stats">
+            <h2 class="section-title">Python By The Numbers</h2>
+            <div class="stats-container">
+                <div class="stat-item">
+                    <div class="stat-number" id="stat1">#1</div>
+                    <div class="stat-label">Most Popular Language</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-number" id="stat2">8.2M</div>
+                    <div class="stat-label">Developers Worldwide</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-number" id="stat3">200K+</div>
+                    <div class="stat-label">Python Packages</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-number" id="stat4">30%</div>
+                    <div class="stat-label">Yearly Growth</div>
+                </div>
+            </div>
+            
+            <div class="section-content">
+                <p>Python continues to dominate popularity indexes like the TIOBE Index and the Stack Overflow Developer Survey. Its growth is driven by the rise of data science, machine learning, and the need for automation across industries.</p>
+                <p>The Python Package Index (PyPI) hosts over 200,000 packages, making it one of the largest software repositories in the world, with thousands of new packages added every month.</p>
+            </div>
+        </section>
+        
+        <!-- Code Example Section -->
+        <section class="content-section" id="code">
+            <h2 class="section-title">Python Code Examples</h2>
+            <div class="section-content">
+                <p>Python's clean, readable syntax makes it accessible to beginners while remaining powerful enough for experts. Here are some examples:</p>
+                
+                <h3>Simple Web Scraping with BeautifulSoup</h3>
+                <div class="code-example">
+                    <pre><code><span class="keyword">import</span> requests
+<span class="keyword">from</span> bs4 <span class="keyword">import</span> BeautifulSoup
+
+<span class="comment"># Fetch a webpage</span>
+url = <span class="string">"https://example.com"</span>
+response = requests.<span class="function">get</span>(url)
+
+<span class="comment"># Parse the HTML content</span>
+soup = BeautifulSoup(response.content, <span class="string">'html.parser'</span>)
+
+<span class="comment"># Extract all paragraph texts</span>
+paragraphs = soup.<span class="function">find_all</span>(<span class="string">'p'</span>)
+<span class="keyword">for</span> p <span class="keyword">in</span> paragraphs:
+    <span class="function">print</span>(p.get_text())</code></pre>
+                </div>
+                
+                <h3>Data Analysis with Pandas</h3>
+                <div class="code-example">
+                    <pre><code><span class="keyword">import</span> pandas <span class="keyword">as</span> pd
+<span class="keyword">import</span> matplotlib.pyplot <span class="keyword">as</span> plt
+
+<span class="comment"># Load data from CSV</span>
+data = pd.<span class="function">read_csv</span>(<span class="string">'sales_data.csv'</span>)
+
+<span class="comment"># Calculate summary statistics</span>
+summary = data.<span class="function">describe</span>()
+<span class="function">print</span>(<span class="string">"Summary Statistics:"</span>)
+<span class="function">print</span>(summary)
+
+<span class="comment"># Create a visualization</span>
+data[<span class="string">'sales'</span>].<span class="function">plot</span>(kind=<span class="string">'hist'</span>, bins=<span class="number">20</span>)
+plt.<span class="function">title</span>(<span class="string">'Sales Distribution'</span>)
+plt.<span class="function">show</span>()</code></pre>
+                </div>
+                
+                <h3>Simple Flask Web Application</h3>
+                <div class="code-example">
+                    <pre><code><span class="keyword">from</span> flask <span class="keyword">import</span> Flask, render_template, request
+
+app = Flask(<span class="builtin">__name__</span>)
+
+<span class="comment"># Define a route for the home page</span>
+<span class="function">@app</span>.<span class="function">route</span>(<span class="string">'/'</span>)
+<span class="keyword">def</span> <span class="function">home</span>():
+    <span class="keyword">return</span> <span class="string">"Welcome to my Python web app!"</span>
+
+<span class="comment"># Define a route with a parameter</span>
+<span class="function">@app</span>.<span class="function">route</span>(<span class="string">'/hello/&lt;name&gt;'</span>)
+<span class="keyword">def</span> <span class="function">hello</span>(name):
+    <span class="keyword">return</span> <span class="function">f</span><span class="string">"Hello, {name}!"</span>
+
+<span class="keyword">if</span> <span class="builtin">__name__</span> == <span class="string">'__main__'</span>:
+    app.<span class="function">run</span>(debug=<span class="keyword">True</span>)</code></pre>
+                </div>
+            </div>
+        </section>
+        
+        <!-- Frameworks Section -->
+        <section class="content-section" id="frameworks">
+            <h2 class="section-title">Popular Python Frameworks & Libraries</h2>
+            <div class="section-content">
+                <p>Python's strength lies in its extensive ecosystem of frameworks and libraries that extend its capabilities for specific applications:</p>
+                
+                <div class="framework-logos">
+                    <div class="framework-logo">
+                        <i class="fab fa-python"></i>
+                        <h4>Django</h4>
+                        <p>High-level web framework</p>
+                    </div>
+                    <div class="framework-logo">
+                        <i class="fas fa-bolt"></i>
+                        <h4>Flask</h4>
+                        <p>Micro web framework</p>
+                    </div>
+                    <div class="framework-logo">
+                        <i class="fas fa-chart-bar"></i>
+                        <h4>Pandas</h4>
+                        <p>Data analysis library</p>
+                    </div>
+                    <div class="framework-logo">
+                        <i class="fas fa-brain"></i>
+                        <h4>TensorFlow</h4>
+                        <p>Machine learning framework</p>
+                    </div>
+                    <div class="framework-logo">
+                        <i class="fas fa-network-wired"></i>
+                        <h4>PyTorch</h4>
+                        <p>Deep learning framework</p>
+                    </div>
+                </div>
+                
+                <div class="applications-container" style="margin-top: 30px;">
+                    <div class="application-card">
+                        <div class="card-header">
+                            <i class="fas fa-server card-icon"></i>
+                            <h3 class="card-title">Backend Development</h3>
+                        </div>
+                        <div class="card-content">
+                            <p><strong>Django:</strong> Batteries-included framework for rapid development of secure and maintainable websites.</p>
+                            <p><strong>Flask:</strong> Lightweight and flexible microframework for building web applications and APIs.</p>
+                            <p><strong>FastAPI:</strong> Modern, fast web framework for building APIs with Python 3.7+ based on standard Python type hints.</p>
+                        </div>
+                    </div>
+                    
+                    <div class="application-card">
+                        <div class="card-header">
+                            <i class="fas fa-calculator card-icon"></i>
+                            <h3 class="card-title">Data Science</h3>
+                        </div>
+                        <div class="card-content">
+                            <p><strong>NumPy:</strong> Fundamental package for scientific computing with support for large, multi-dimensional arrays and matrices.</p>
+                            <p><strong>Pandas:</strong> Provides high-performance, easy-to-use data structures and data analysis tools.</p>
+                            <p><strong>Matplotlib:</strong> Comprehensive library for creating static, animated, and interactive visualizations.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+        
+        <!-- Resources Section -->
+        <section class="content-section" id="resources">
+            <h2 class="section-title">Getting Started with Python</h2>
+            <div class="section-content">
+                <p>If you're interested in learning Python or expanding your Python skills, here are some excellent resources:</p>
+                
+                <div class="applications-container">
+                    <div class="application-card">
+                        <div class="card-header">
+                            <i class="fas fa-graduation-cap card-icon"></i>
+                            <h3 class="card-title">Learning Platforms</h3>
+                        </div>
+                        <div class="card-content">
+                            <p><strong>Python.org:</strong> Official Python documentation and tutorials</p>
+                            <p><strong>Coursera/edX:</strong> University courses on Python programming</p>
+                            <p><strong>Codecademy:</strong> Interactive Python courses for beginners</p>
+                            <p><strong>Real Python:</strong> Tutorials and articles for all skill levels</p>
+                        </div>
+                    </div>
+                    
+                    <div class="application-card">
+                        <div class="card-header">
+                            <i class="fas fa-book card-icon"></i>
+                            <h3 class="card-title">Recommended Books</h3>
+                        </div>
+                        <div class="card-content">
+                            <p><strong>Automate the Boring Stuff with Python:</strong> Practical programming for total beginners</p>
+                            <p><strong>Python Crash Course:</strong> Hands-on, project-based introduction</p>
+                            <p><strong>Fluent Python:</strong> For experienced programmers</p>
+                            <p><strong>Python for Data Analysis:</strong> Data wrangling with Pandas</p>
+                        </div>
+                    </div>
+                    
+                    <div class="application-card">
+                        <div class="card-header">
+                            <i class="fas fa-users card-icon"></i>
+                            <h3 class="card-title">Community Resources</h3>
+                        </div>
+                        <div class="card-content">
+                            <p><strong>Stack Overflow:</strong> Q&A for programming questions</p>
+                            <p><strong>GitHub:</strong> Explore Python projects and contribute</p>
+                            <p><strong>PyCon:</strong> Annual Python conference with talks and tutorials</p>
+                            <p><strong>Local Meetups:</strong> Connect with Python developers in your area</p>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="highlight" style="background-color: #e9f2f9; padding: 25px; border-radius: 8px; margin-top: 30px;">
+                    <h3 style="color: #306998; margin-bottom: 15px;">Why Learn Python?</h3>
+                    <p>Python is consistently ranked as one of the most in-demand programming skills in the job market. Whether you're interested in web development, data science, AI, or automation, Python provides a solid foundation that will serve you throughout your career.</p>
+                    <p>With its gentle learning curve and powerful capabilities, Python is an excellent choice for both beginners and experienced programmers looking to expand their skill set.</p>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Footer -->
+    <footer>
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-section">
+                    <h3>Python Applications</h3>
+                    <p>Explore the versatility of Python programming across different domains and industries. From web development to artificial intelligence, Python continues to shape the future of technology.</p>
+                    <div class="social-icons">
+                        <a href="#"><i class="fab fa-python"></i></a>
+                        <a href="#"><i class="fab fa-github"></i></a>
+                        <a href="#"><i class="fab fa-stack-overflow"></i></a>
+                        <a href="#"><i class="fab fa-reddit"></i></a>
+                    </div>
+                </div>
+                
+                <div class="footer-section">
+                    <h3>Quick Links</h3>
+                    <ul class="footer-links">
+                        <li><a href="#home">Home</a></li>
+                        <li><a href="#applications">Applications</a></li>
+                        <li><a href="#frameworks">Frameworks</a></li>
+                        <li><a href="#stats">Statistics</a></li>
+                        <li><a href="#resources">Resources</a></li>
+                    </ul>
+                </div>
+                
+                <div class="footer-section">
+                    <h3>Python Resources</h3>
+                    <p><i class="fas fa-external-link-alt"></i> <a href="https://www.python.org" style="color: white;">Official Python Website</a></p>
+                    <p><i class="fas fa-book"></i> <a href="https://docs.python.org" style="color: white;">Python Documentation</a></p>
+                    <p><i class="fas fa-box"></i> <a href="https://pypi.org" style="color: white;">Python Package Index</a></p>
+                    <p><i class="fas fa-code"></i> <a href="https://github.com/python" style="color: white;">Python on GitHub</a></p>
+                </div>
+            </div>
+            
+            <div class="copyright">
+                <p>&copy; 2023 Python Applications Overview. This is an educational resource about Python programming.</p>
+                <p>Python and the Python logos are trademarks or registered trademarks of the Python Software Foundation.</p>
+            </div>
+        </div>
+    </footer>
+    
+    <!-- Back to Top Button -->
+    <a href="#" class="back-to-top" id="backToTop">
+        <i class="fas fa-arrow-up"></i>
+    </a>
+
+    <script>
+        // Smooth scrolling for navigation links
+        document.querySelectorAll('nav a').forEach(anchor => {
+            anchor.addEventListener('click', function(e) {
+                e.preventDefault();
+                
+                // Update active state
+                document.querySelectorAll('nav a').forEach(link => {
+                    link.classList.remove('active');
+                });
+                this.classList.add('active');
+                
+                // Scroll to target
+                const targetId = this.getAttribute('href');
+                if(targetId !== '#') {
+                    const targetSection = document.querySelector(targetId);
+                    if(targetSection) {
+                        window.scrollTo({
+                            top: targetSection.offsetTop - 80,
+                            behavior: 'smooth'
+                        });
+                    }
+                }
+            });
+        });
+        
+        // Back to top button functionality
+        const backToTopButton = document.getElementById('backToTop');
+        
+        window.addEventListener('scroll', function() {
+            if (window.pageYOffset > 300) {
+                backToTopButton.classList.add('visible');
+            } else {
+                backToTopButton.classList.remove('visible');
+            }
+        });
+        
+        backToTopButton.addEventListener('click', function(e) {
+            e.preventDefault();
+            window.scrollTo({
+                top: 0,
+                behavior: 'smooth'
+            });
+            
+            // Update active nav
+            document.querySelectorAll('nav a').forEach(link => {
+                link.classList.remove('active');
+            });
+            document.querySelector('nav a[href="#home"]').classList.add('active');
+        });
+        
+        // Animate statistics when they come into view
+        const statNumbers = document.querySelectorAll('.stat-number');
+        const statsSection = document.getElementById('stats');
+        
+        const animateStats = () => {
+            const statValues = ['#1', '8.2M', '200K+', '30%'];
+            statNumbers.forEach((stat, index) => {
+                let counter = 0;
+                const target = statValues[index];
+                
+                // For numeric values, animate counting up
+                if (target.includes('M') || target.includes('K') || target.includes('%')) {
+                    const numericPart = target.replace(/[^0-9.]/g, '');
+                    const unit = target.replace(/[0-9.]/g, '');
+                    
+                    const increment = parseFloat(numericPart) / 50;
+                    let current = 0;
+                    
+                    const updateCounter = () => {
+                        if (current < parseFloat(numericPart)) {
+                            current += increment;
+                            stat.textContent = Math.floor(current) + unit;
+                            setTimeout(updateCounter, 30);
+                        } else {
+                            stat.textContent = target;
+                        }
+                    };
+                    
+                    updateCounter();
+                } else {
+                    // For non-numeric values, just set immediately
+                    stat.textContent = target;
+                }
+            });
+        };
+        
+        // Observe when stats section comes into view
+        const observer = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    animateStats();
+                    observer.unobserve(entry.target);
+                }
+            });
+        }, { threshold: 0.5 });
+        
+        if (statsSection) {
+            observer.observe(statsSection);
+        }
+        
+        // Highlight current section while scrolling
+        window.addEventListener('scroll', function() {
+            const sections = document.querySelectorAll('.content-section');
+            const navLinks = document.querySelectorAll('nav a');
+            
+            let currentSection = '';
+            
+            sections.forEach(section => {
+                const sectionTop = section.offsetTop - 100;
+                const sectionHeight = section.clientHeight;
+                if(pageYOffset >= sectionTop && pageYOffset < sectionTop + sectionHeight) {
+                    currentSection = '#' + section.getAttribute('id');
+                }
+            });
+            
+            // Update active nav link
+            navLinks.forEach(link => {
+                link.classList.remove('active');
+                if(link.getAttribute('href') === currentSection) {
+                    link.classList.add('active');
+                }
+            });
+            
+            // If at top, highlight home
+            if(window.pageYOffset < 100) {
+                navLinks.forEach(link => link.classList.remove('active'));
+                document.querySelector('nav a[href="#home"]').classList.add('active');
+            }
+        });
+    </script>
+</body>
+</html>

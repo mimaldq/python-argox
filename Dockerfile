@@ -57,7 +57,8 @@ RUN useradd -m -u 1000 appuser && \
 USER appuser
 
 # 暴露端口
-EXPOSE 3000 7860
+EXPOSE 7860
 
 # 运行应用
 CMD ["python", "app.py"]
+

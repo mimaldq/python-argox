@@ -10,36 +10,19 @@ import time
 import signal
 import logging
 import asyncio
-import re
-import platform
-from pathlib import Path
-from datetime import datetime
-from typing import Optional, Dict, List, Tuple, Any
-
 import aiohttp
-from aiohttp import web, WSMsgType
+from pathlib import Path
+from aiohttp import web
+from urllib.parse import urlparse, quote
 import yaml
-import psutil
-from dotenv import load_dotenv
-
-# 加载环境变量
-load_dotenv()
+import uuid as uuid_module
 
 # 设置日志
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler('app.log', encoding='utf-8')
-    ]
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
-# 添加应用启动标志
-print(f"\n{'='*60}")
-print(f"Application Startup at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-print(f"{'='*60}\n")
 
 # 环境变量配置
 UPLOAD_URL = os.getenv('UPLOAD_URL', '')
@@ -47,14 +30,14 @@ PROJECT_URL = os.getenv('PROJECT_URL', '')
 AUTO_ACCESS = os.getenv('AUTO_ACCESS', 'false').lower() == 'true'
 FILE_PATH = os.getenv('FILE_PATH', './tmp')
 SUB_PATH = os.getenv('SUB_PATH', 'sub')
-# 删除 PORT 环境变量，统一使用 ARGO_PORT
-ARGO_PORT = int(os.getenv('ARGO_PORT', '7860'))
+PORT = int(os.getenv('SERVER_PORT', os.getenv('PORT', '3000')))
 UUID = os.getenv('UUID', 'e2cae6af-5cdd-fa48-4137-ad3e617fbab0')
 NEZHA_SERVER = os.getenv('NEZHA_SERVER', '')
 NEZHA_PORT = os.getenv('NEZHA_PORT', '')
 NEZHA_KEY = os.getenv('NEZHA_KEY', '')
 ARGO_DOMAIN = os.getenv('ARGO_DOMAIN', '')
 ARGO_AUTH = os.getenv('ARGO_AUTH', '')
+ARGO_PORT = int(os.getenv('ARGO_PORT', '7860'))
 CFIP = os.getenv('CFIP', 'cdns.doon.eu.org')
 CFPORT = os.getenv('CFPORT', '443')
 NAME = os.getenv('NAME', '')
@@ -69,22 +52,18 @@ logger.info(f"{FILE_PATH} created or already exists")
 
 # 全局变量
 monitor_process = None
-argo_domain_cache = None
-sub_content_cache = None
-xray_port = 3001  # Xray 服务端口
-server_port = ARGO_PORT  # aiohttp 服务端口
+processes = []
+sub_txt = ""
+argo_domain = ""
 
 class ProcessManager:
-    """进程管理器"""
     def __init__(self):
-        self.processes: List[subprocess.Popen] = []
+        self.processes = []
     
-    def add_process(self, process: subprocess.Popen) -> None:
-        """添加进程到管理器"""
+    def add_process(self, process):
         self.processes.append(process)
     
-    def cleanup(self) -> None:
-        """清理所有进程"""
+    def cleanup(self):
         for process in self.processes:
             try:
                 if process.poll() is None:  # 进程还在运行
@@ -98,7 +77,7 @@ class ProcessManager:
 
 process_manager = ProcessManager()
 
-def generate_random_name(length: int = 6) -> str:
+def generate_random_name(length=6):
     """生成随机文件名"""
     return ''.join(random.choices(string.ascii_lowercase, k=length))
 
@@ -122,20 +101,50 @@ config_path = file_path / 'config.json'
 tunnel_json_path = file_path / 'tunnel.json'
 tunnel_yaml_path = file_path / 'tunnel.yml'
 
-def cleanup_old_files() -> None:
+def delete_nodes():
+    """删除历史节点"""
+    if not UPLOAD_URL or not sub_path.exists():
+        return
+    
+    try:
+        with open(sub_path, 'r', encoding='utf-8') as f:
+            file_content = f.read()
+        
+        decoded = base64.b64decode(file_content).decode('utf-8')
+        nodes = [line for line in decoded.split('\n') 
+                if any(proto in line for proto in ['vless://', 'vmess://', 'trojan://', 'hysteria2://', 'tuic://'])]
+        
+        if not nodes:
+            return
+        
+        payload = {'nodes': nodes}
+        try:
+            response = requests.post(
+                f"{UPLOAD_URL}/api/delete-nodes",
+                json=payload,
+                headers={'Content-Type': 'application/json'},
+                timeout=10
+            )
+            if response.status_code == 200:
+                logger.info("Nodes deleted successfully")
+        except Exception as e:
+            logger.error(f"Error deleting nodes: {e}")
+    except Exception as e:
+        logger.error(f"Error in delete_nodes: {e}")
+
+def cleanup_old_files():
     """清理历史文件"""
     try:
         for file in file_path.iterdir():
             try:
-                if file.is_file() and file.name not in ['app.log', '.env']:
+                if file.is_file():
                     file.unlink()
-                    logger.debug(f"Deleted old file: {file}")
             except Exception:
                 pass  # 忽略错误
     except Exception as e:
         logger.error(f"Error cleaning old files: {e}")
 
-def generate_config() -> None:
+def generate_config():
     """生成Xray配置文件"""
     config = {
         "log": {
@@ -155,7 +164,7 @@ def generate_config() -> None:
         },
         "inbounds": [
             {
-                "port": xray_port,
+                "port": 3001,
                 "protocol": "vless",
                 "settings": {
                     "clients": [{
@@ -272,36 +281,33 @@ def generate_config() -> None:
         json.dump(config, f, indent=2)
     logger.info("Xray config file generated")
 
-def get_system_architecture() -> str:
+def get_system_architecture():
     """获取系统架构"""
-    arch = platform.machine().lower()
+    arch = os.uname().machine.lower() if hasattr(os, 'uname') else os.environ.get('HOSTTYPE', '')
     if 'arm' in arch or 'aarch64' in arch:
         return 'arm'
     return 'amd'
 
-async def download_file(url: str, filepath: Path) -> bool:
-    """异步下载文件"""
+def download_file(url, filepath):
+    """下载文件"""
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as response:
-                response.raise_for_status()
-                
-                with open(filepath, 'wb') as f:
-                    while True:
-                        chunk = await response.content.read(8192)
-                        if not chunk:
-                            break
-                        f.write(chunk)
-                
-                # 设置可执行权限
-                filepath.chmod(0o755)
-                logger.info(f"Downloaded {filepath.name} successfully")
-                return True
+        response = requests.get(url, stream=True, timeout=30)
+        response.raise_for_status()
+        
+        with open(filepath, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+        
+        # 设置可执行权限
+        filepath.chmod(0o755)
+        logger.info(f"Downloaded {filepath.name} successfully")
+        return True
     except Exception as e:
         logger.error(f"Failed to download {url}: {e}")
         return False
 
-def get_files_for_architecture(architecture: str) -> List[Tuple[Path, str]]:
+def get_files_for_architecture(architecture):
     """根据架构获取要下载的文件列表"""
     base_files = []
     
@@ -326,13 +332,14 @@ def get_files_for_architecture(architecture: str) -> List[Tuple[Path, str]]:
     
     return base_files
 
-def run_process(cmd: List[str], detach: bool = False) -> Optional[subprocess.Popen]:
+def run_process(cmd, detach=False):
     """运行进程"""
     try:
         if detach:
             # 分离进程运行
             process = subprocess.Popen(
                 cmd,
+                shell=True,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True
@@ -341,13 +348,13 @@ def run_process(cmd: List[str], detach: bool = False) -> Optional[subprocess.Pop
             return process
         else:
             # 阻塞运行
-            result = subprocess.run(cmd, capture_output=True, text=True)
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
             return result
     except Exception as e:
         logger.error(f"Error running command {cmd}: {e}")
         return None
 
-async def download_files_and_run() -> None:
+def download_files_and_run():
     """下载并运行依赖文件"""
     architecture = get_system_architecture()
     files_to_download = get_files_for_architecture(architecture)
@@ -356,20 +363,10 @@ async def download_files_and_run() -> None:
         logger.error("No files found for current architecture")
         return
     
-    # 异步下载所有文件
-    download_tasks = []
+    # 下载文件
     for filepath, url in files_to_download:
-        download_tasks.append(download_file(url, filepath))
-    
-    results = await asyncio.gather(*download_tasks, return_exceptions=True)
-    
-    # 检查下载结果
-    for i, result in enumerate(results):
-        if isinstance(result, Exception):
-            logger.error(f"Failed to download {files_to_download[i][1]}: {result}")
-            return
-        elif not result:
-            logger.error(f"Failed to download {files_to_download[i][1]}")
+        if not download_file(url, filepath):
+            logger.error(f"Failed to download {filepath.name}")
             return
     
     # 运行哪吒监控
@@ -405,14 +402,13 @@ uuid: {UUID}"""
                 f.write(config_yaml)
             
             # 运行哪吒v1
-            cmd = [str(php_path), "-c", str(file_path / 'config.yaml')]
+            cmd = f"{php_path} -c {file_path / 'config.yaml'}"
             run_process(cmd, detach=True)
             logger.info(f"{php_name} is running")
-            await asyncio.sleep(1)
+            time.sleep(1)
         else:
             # 哪吒v0
             args = [
-                str(npm_path),
                 "-s", f"{NEZHA_SERVER}:{NEZHA_PORT}",
                 "-p", NEZHA_KEY
             ]
@@ -423,19 +419,47 @@ uuid: {UUID}"""
             
             args.extend(["--disable-auto-update", "--report-delay", "4", "--skip-conn", "--skip-procs"])
             
-            run_process(args, detach=True)
+            cmd = f"{npm_path} {' '.join(args)}"
+            run_process(cmd, detach=True)
             logger.info(f"{npm_name} is running")
-            await asyncio.sleep(1)
+            time.sleep(1)
     else:
         logger.info("Nezha variables are empty, skipping")
     
     # 运行Xray
-    cmd = [str(web_path), "-c", str(config_path)]
+    cmd = f"{web_path} -c {config_path}"
     run_process(cmd, detach=True)
     logger.info(f"{web_name} is running")
-    await asyncio.sleep(1)
+    time.sleep(1)
+    
+    # 运行cloudflared
+    if bot_path.exists():
+        args = ["tunnel", "--edge-ip-version", "auto", "--no-autoupdate", "--protocol", "http2"]
+        
+        if ARGO_AUTH and ARGO_AUTH.strip() and len(ARGO_AUTH.strip()) >= 120 and len(ARGO_AUTH.strip()) <= 250:
+            args.extend(["run", "--token", ARGO_AUTH.strip()])
+        elif ARGO_AUTH and 'TunnelSecret' in ARGO_AUTH:
+            # 确保隧道配置文件存在
+            if not tunnel_yaml_path.exists():
+                logger.info("Waiting for tunnel config file generation...")
+                time.sleep(1)
+            
+            args.extend(["--config", str(tunnel_yaml_path), "run"])
+        else:
+            args.extend([
+                "--logfile", str(boot_log_path),
+                "--loglevel", "info",
+                "--url", f"http://localhost:{ARGO_PORT}"
+            ])
+        
+        cmd = f"{bot_path} {' '.join(args)}"
+        run_process(cmd, detach=True)
+        logger.info(f"{bot_name} is running")
+        time.sleep(5)
+    
+    time.sleep(2)
 
-def argo_type() -> None:
+def argo_type():
     """配置Argo隧道类型"""
     if not ARGO_AUTH or not ARGO_DOMAIN:
         logger.info("ARGO_DOMAIN or ARGO_AUTH is empty, using quick tunnel")
@@ -458,7 +482,7 @@ protocol: http2
 
 ingress:
   - hostname: {ARGO_DOMAIN}
-    service: http://localhost:{server_port}  # 连接到aiohttp服务
+    service: http://localhost:{ARGO_PORT}
     originRequest:
       noTLSVerify: true
   - service: http_status:404
@@ -471,109 +495,176 @@ ingress:
     else:
         logger.info("ARGO_AUTH is not TunnelSecret format, using token connection")
 
-async def extract_domains() -> Optional[str]:
-    """异步提取隧道域名"""
-    global argo_domain_cache
+def download_monitor_script():
+    """下载监控脚本"""
+    if not MONITOR_KEY or not MONITOR_SERVER or not MONITOR_URL:
+        logger.info("Monitor environment variables incomplete, skipping monitor script")
+        return False
     
-    if argo_domain_cache:
-        return argo_domain_cache
+    monitor_url = "https://raw.githubusercontent.com/mimaldq/cf-vps-monitor/main/cf-vps-monitor.sh"
+    logger.info(f"Downloading monitor script from {monitor_url}")
+    
+    try:
+        response = requests.get(monitor_url, timeout=30)
+        response.raise_for_status()
+        
+        with open(monitor_path, 'wb') as f:
+            f.write(response.content)
+        
+        monitor_path.chmod(0o755)
+        logger.info("Monitor script downloaded successfully")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to download monitor script: {e}")
+        return False
+
+def run_monitor_script():
+    """运行监控脚本"""
+    if not MONITOR_KEY or not MONITOR_SERVER or not MONITOR_URL:
+        return
+    
+    cmd = [
+        str(monitor_path),
+        '-i',
+        '-k', MONITOR_KEY,
+        '-s', MONITOR_SERVER,
+        '-u', MONITOR_URL
+    ]
+    
+    logger.info(f"Running monitor script: {' '.join(cmd)}")
+    
+    try:
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            universal_newlines=True
+        )
+        
+        global monitor_process
+        monitor_process = process
+        
+        # 启动线程读取输出
+        def read_output():
+            while True:
+                output = process.stdout.readline()
+                if output:
+                    logger.info(f"Monitor output: {output.strip()}")
+                error = process.stderr.readline()
+                if error:
+                    logger.error(f"Monitor error: {error.strip()}")
+                
+                if process.poll() is not None:
+                    break
+                time.sleep(0.1)
+        
+        threading.Thread(target=read_output, daemon=True).start()
+        
+        # 监控进程状态
+        def monitor_process_status():
+            process.wait()
+            code = process.returncode
+            logger.info(f"Monitor script exited with code: {code}")
+            if code != 0:
+                logger.info("Restarting monitor script in 30 seconds...")
+                time.sleep(30)
+                run_monitor_script()
+        
+        threading.Thread(target=monitor_process_status, daemon=True).start()
+        
+    except Exception as e:
+        logger.error(f"Error running monitor script: {e}")
+
+def extract_domains():
+    """提取隧道域名"""
+    global argo_domain
     
     if ARGO_AUTH and ARGO_DOMAIN:
-        argo_domain_cache = ARGO_DOMAIN
-        logger.info(f'Using fixed domain: {argo_domain_cache}')
-        return argo_domain_cache
+        argo_domain = ARGO_DOMAIN
+        logger.info(f'Using fixed domain: {argo_domain}')
+        generate_links(argo_domain)
     else:
         try:
-            # 启动cloudflared隧道（连接到aiohttp服务端口）
-            args = [str(bot_path), "tunnel", "--edge-ip-version", "auto", "--no-autoupdate", "--protocol", "http2"]
+            if not boot_log_path.exists():
+                logger.error("boot.log not found")
+                return
             
-            if ARGO_AUTH and ARGO_AUTH.strip() and len(ARGO_AUTH.strip()) >= 120 and len(ARGO_AUTH.strip()) <= 250:
-                args.extend(["run", "--token", ARGO_AUTH.strip()])
-            elif ARGO_AUTH and 'TunnelSecret' in ARGO_AUTH:
-                if not tunnel_yaml_path.exists():
-                    logger.info("Waiting for tunnel config file generation...")
-                    await asyncio.sleep(1)
-                args.extend(["--config", str(tunnel_yaml_path), "run"])
+            with open(boot_log_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            import re
+            domains = re.findall(r'https?://([^ ]*trycloudflare\.com)', content)
+            
+            if domains:
+                argo_domain = domains[0]
+                logger.info(f'Found temporary domain: {argo_domain}')
+                generate_links(argo_domain)
             else:
-                args.extend([
-                    "--logfile", str(boot_log_path),
-                    "--loglevel", "info",
-                    "--url", f"http://localhost:{server_port}"  # 连接到aiohttp服务
-                ])
-            
-            run_process(args, detach=True)
-            logger.info(f"{bot_name} is running")
-            
-            # 读取日志文件获取域名（如果是快速隧道）
-            if not ARGO_AUTH or not ARGO_DOMAIN:
-                await asyncio.sleep(5)
+                logger.info('Domain not found, restarting bot to get Argo domain')
+                boot_log_path.unlink(missing_ok=True)
                 
-                if not boot_log_path.exists():
-                    logger.error("boot.log not found")
-                    return None
+                # 停止现有的cloudflared进程
+                kill_bot_process()
+                time.sleep(3)
                 
-                # 读取日志文件获取域名
-                max_attempts = 10
-                for attempt in range(max_attempts):
-                    if boot_log_path.exists():
-                        with open(boot_log_path, 'r', encoding='utf-8') as f:
-                            content = f.read()
-                        
-                        domains = re.findall(r'https?://([^ ]*trycloudflare\.com)', content)
-                        
-                        if domains:
-                            argo_domain_cache = domains[0]
-                            logger.info(f'Found temporary domain: {argo_domain_cache}')
-                            return argo_domain_cache
-                    
-                    logger.info(f"Waiting for domain... attempt {attempt + 1}/{max_attempts}")
-                    await asyncio.sleep(2)
-                
-                logger.error("Failed to extract domain after multiple attempts")
-                return None
-            
-            return argo_domain_cache
-            
+                # 重新启动cloudflared
+                cmd = f"nohup {bot_path} tunnel --edge-ip-version auto --no-autoupdate --protocol http2 --logfile {boot_log_path} --loglevel info --url http://localhost:{ARGO_PORT} >/dev/null 2>&1 &"
+                run_process(cmd, detach=True)
+                logger.info(f"{bot_name} restarted")
+                time.sleep(3)
+                extract_domains()
         except Exception as e:
-            logger.error(f'Error extracting domains: {e}')
-            return None
+            logger.error(f'Error reading boot.log: {e}')
 
-async def get_meta_info() -> str:
-    """异步获取ISP信息"""
+def kill_bot_process():
+    """停止bot进程"""
+    try:
+        if sys.platform == 'win32':
+            subprocess.run(f"taskkill /f /im {bot_name}.exe", 
+                          shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            subprocess.run(f"pkill -f '[{bot_name[0]}]{bot_name[1:]}'",
+                          shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass  # 忽略错误
+
+async def get_meta_info():
+    """获取ISP信息"""
     try:
         async with aiohttp.ClientSession() as session:
-            try:
-                async with session.get('https://ipapi.co/json/', timeout=3) as response:
+            async with session.get('https://ipapi.co/json/', timeout=3) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data.get('country_code') and data.get('org'):
+                        return f"{data['country_code']}_{data['org']}"
+    except Exception:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get('http://ip-api.com/json/', timeout=3) as response:
                     if response.status == 200:
                         data = await response.json()
-                        if data.get('country_code') and data.get('org'):
-                            return f"{data['country_code']}_{data['org']}"
-            except:
-                try:
-                    async with session.get('http://ip-api.com/json/', timeout=3) as response:
-                        if response.status == 200:
-                            data = await response.json()
-                            if data.get('status') == 'success' and data.get('countryCode') and data.get('org'):
-                                return f"{data['countryCode']}_{data['org']}"
-                except:
-                    pass
-    except:
-        pass
+                        if data.get('status') == 'success' and data.get('countryCode') and data.get('org'):
+                            return f"{data['countryCode']}_{data['org']}"
+        except Exception:
+            pass
     
     return 'Unknown'
 
-async def generate_links() -> str:
-    """异步生成订阅链接"""
-    global argo_domain_cache, sub_content_cache
+def generate_links(domain):
+    """生成订阅链接"""
+    global sub_txt, argo_domain
+    argo_domain = domain
     
-    if not argo_domain_cache:
-        argo_domain_cache = await extract_domains()
+    # 同步方式调用异步函数
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        ISP = loop.run_until_complete(get_meta_info())
+    finally:
+        loop.close()
     
-    if not argo_domain_cache:
-        logger.error("Cannot generate links without domain")
-        return ""
-    
-    ISP = await get_meta_info()
     node_name = f"{NAME}-{ISP}" if NAME else ISP
     
     # 生成VMESS配置
@@ -587,23 +678,25 @@ async def generate_links() -> str:
         "scy": "none",
         "net": "ws",
         "type": "none",
-        "host": argo_domain_cache,
-        "path": "/vless-argo",
+        "host": argo_domain,
+        "path": "/vmess-argo?ed=2560",
         "tls": "tls",
-        "sni": argo_domain_cache,
+        "sni": argo_domain,
         "alpn": "",
         "fp": "firefox"
     }
     
     vmess_base64 = base64.b64encode(json.dumps(vmess_config).encode()).decode()
     
-    sub_txt = f"""
-vless://{UUID}@{CFIP}:{CFPORT}?encryption=none&security=tls&sni={argo_domain_cache}&fp=firefox&type=ws&host={argo_domain_cache}&path=%2Fvless-argo#{node_name}
+    # 转义路径中的特殊字符
+    encoded_path = quote("/vless-argo?ed=2560", safe='')
+    
+    sub_txt = f"""vless://{UUID}@{CFIP}:{CFPORT}?encryption=none&security=tls&sni={argo_domain}&fp=firefox&type=ws&host={argo_domain}&path={encoded_path}#{node_name}
 
 vmess://{vmess_base64}
 
-trojan://{UUID}@{CFIP}:{CFPORT}?security=tls&sni={argo_domain_cache}&fp=firefox&type=ws&host={argo_domain_cache}&path=%2Ftrojan-argo#{node_name}
-    """
+trojan://{UUID}@{CFIP}:{CFPORT}?security=tls&sni={argo_domain}&fp=firefox&type=ws&host={argo_domain}&path={encoded_path.replace('vless', 'trojan')}#{node_name}
+"""
     
     # 打印base64编码的订阅内容
     encoded_content = base64.b64encode(sub_txt.encode()).decode()
@@ -614,143 +707,85 @@ trojan://{UUID}@{CFIP}:{CFPORT}?security=tls&sni={argo_domain_cache}&fp=firefox&
         f.write(encoded_content)
     logger.info(f"{sub_path} saved successfully")
     
-    # 缓存订阅内容
-    sub_content_cache = encoded_content
+    # 上传节点
+    upload_nodes()
     
     return sub_txt
 
-async def start_server() -> None:
-    """异步启动服务器主流程"""
-    logger.info('Starting server initialization...')
-    
-    cleanup_old_files()
-    
-    argo_type()
-    generate_config()
-    await download_files_and_run()
-    
-    # 等待服务启动
-    logger.info('Waiting for services startup...')
-    await asyncio.sleep(5)
-    
-    # 生成订阅链接
-    await generate_links()
-    
-    logger.info('Server initialization complete')
-
-async def websocket_proxy(request):
-    """WebSocket代理到Xray"""
-    ws_to_xray = web.WebSocketResponse()
-    await ws_to_xray.prepare(request)
-    
-    # 目标Xray WebSocket地址
-    xray_ws_url = f"ws://127.0.0.1:{xray_port}{request.path}"
-    
-    logger.info(f"Proxying WebSocket to Xray: {xray_ws_url}")
-    
-    try:
-        # 连接到Xray的WebSocket服务
-        async with aiohttp.ClientSession() as session:
-            async with session.ws_connect(xray_ws_url) as xray_ws:
-                
-                async def forward_to_xray():
-                    async for msg in ws_to_xray:
-                        if msg.type == WSMsgType.TEXT:
-                            await xray_ws.send_str(msg.data)
-                        elif msg.type == WSMsgType.BINARY:
-                            await xray_ws.send_bytes(msg.data)
-                        elif msg.type == WSMsgType.ERROR:
-                            break
-                        elif msg.type == WSMsgType.CLOSE:
-                            await xray_ws.close()
-                            break
-                
-                async def forward_to_client():
-                    async for msg in xray_ws:
-                        if msg.type == WSMsgType.TEXT:
-                            await ws_to_xray.send_str(msg.data)
-                        elif msg.type == WSMsgType.BINARY:
-                            await ws_to_xray.send_bytes(msg.data)
-                        elif msg.type == WSMsgType.ERROR:
-                            break
-                        elif msg.type == WSMsgType.CLOSE:
-                            await ws_to_xray.close()
-                            break
-                
-                # 同时转发两个方向的消息
-                await asyncio.gather(
-                    forward_to_xray(),
-                    forward_to_client()
-                )
-                
-    except Exception as e:
-        logger.error(f"WebSocket proxy error: {e}")
-    
-    return ws_to_xray
-
-async def handle_index(request):
-    """处理根路由，如果没有index.html则返回Hello world!"""
-    index_path = Path(__file__).parent / 'index.html'
-    if index_path.exists():
-        return web.FileResponse(index_path)
-    
-    # 如果没有index.html，返回"Hello world!"
-    return web.Response(text="Hello world!", content_type='text/plain')
-
-async def handle_subscription(request):
-    """处理订阅请求"""
-    global sub_content_cache
-    
-    if sub_content_cache:
-        return web.Response(text=sub_content_cache, content_type='text/plain')
-    elif sub_path.exists():
-        with open(sub_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-        return web.Response(text=content, content_type='text/plain')
+def upload_nodes():
+    """上传节点或订阅"""
+    if UPLOAD_URL and PROJECT_URL:
+        subscription_url = f"{PROJECT_URL}/{SUB_PATH}"
+        json_data = {
+            "subscription": [subscription_url]
+        }
+        try:
+            response = requests.post(
+                f"{UPLOAD_URL}/api/add-subscriptions",
+                json=json_data,
+                headers={'Content-Type': 'application/json'},
+                timeout=10
+            )
+            if response.status_code == 200:
+                logger.info('Subscription uploaded successfully')
+                return response
+            else:
+                logger.error(f'Upload failed with status code: {response.status_code}')
+                return None
+        except Exception as e:
+            logger.error(f'Failed to upload subscription: {e}')
+            return None
+    elif UPLOAD_URL:
+        if not list_path.exists():
+            return None
+        
+        try:
+            with open(list_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            nodes = [line for line in content.split('\n') 
+                    if any(proto in line for proto in ['vless://', 'vmess://', 'trojan://', 'hysteria2://', 'tuic://'])]
+            
+            if not nodes:
+                return None
+            
+            json_data = json.dumps({"nodes": nodes})
+            
+            response = requests.post(
+                f"{UPLOAD_URL}/api/add-nodes",
+                data=json_data,
+                headers={'Content-Type': 'application/json'},
+                timeout=10
+            )
+            if response.status_code == 200:
+                logger.info('Nodes uploaded successfully')
+                return response
+            else:
+                logger.error(f'Upload failed with status code: {response.status_code}')
+                return None
+        except Exception as e:
+            logger.error(f'Failed to upload nodes: {e}')
+            return None
     else:
-        return web.Response(
-            text="Subscription not ready yet. Please try again in a few seconds.",
-            status=503,
-            content_type='text/plain'
-        )
+        return None
 
-async def handle_health(request):
-    """健康检查端点"""
-    health_data = {
-        "status": "healthy",
-        "timestamp": datetime.now().isoformat(),
-        "services": {
-            "xray": web_path.exists(),
-            "cloudflared": bot_path.exists() and argo_domain_cache is not None,
-            "subscription": sub_path.exists(),
-            "aiohttp": True
-        },
-        "domain": argo_domain_cache,
-        "server_port": server_port,
-        "xray_port": xray_port,
-        "subscription_available": sub_path.exists() or sub_content_cache is not None
-    }
-    
-    return web.json_response(health_data)
-
-def clean_files() -> None:
+def clean_files():
     """清理文件"""
     def cleanup():
         time.sleep(90)  # 90秒后清理
         
-        files_to_delete = [boot_log_path, config_path, monitor_path]
+        files_to_delete = [boot_log_path, config_path, web_path, bot_path, monitor_path]
         
         if NEZHA_PORT:
             files_to_delete.append(npm_path)
         elif NEZHA_SERVER and NEZHA_KEY:
             files_to_delete.append(php_path)
         
-        # 删除文件（保留web和bot进程文件）
+        # 删除文件
         for file in files_to_delete:
             try:
                 if file.exists():
                     file.unlink()
-                    logger.debug(f"Cleaned file: {file}")
             except Exception:
                 pass  # 忽略错误
         
@@ -760,9 +795,203 @@ def clean_files() -> None:
     # 在新线程中运行清理
     threading.Thread(target=cleanup, daemon=True).start()
 
+def add_visit_task():
+    """添加自动访问任务"""
+    if not AUTO_ACCESS or not PROJECT_URL:
+        logger.info("Skipping auto-access task")
+        return None
+    
+    try:
+        response = requests.post(
+            'https://oooo.serv00.net/add-url',
+            json={'url': PROJECT_URL},
+            headers={'Content-Type': 'application/json'},
+            timeout=10
+        )
+        logger.info("Auto-access task added successfully")
+        return response
+    except Exception as e:
+        logger.error(f"Failed to add auto-access task: {e}")
+        return None
+
+async def handle_index(request):
+    """处理根路由"""
+    index_path = Path(__file__).parent / 'index.html'
+    if index_path.exists():
+        return web.FileResponse(index_path)
+    return web.Response(text="Hello world!")
+
+async def handle_sub(request):
+    """处理订阅路由"""
+    global sub_txt
+    if not sub_txt:
+        return web.Response(status=404, text="Subscription not ready")
+    
+    encoded_content = base64.b64encode(sub_txt.encode()).decode()
+    return web.Response(
+        text=encoded_content,
+        content_type='text/plain; charset=utf-8'
+    )
+
+async def websocket_handler(request):
+    """处理WebSocket连接，转发到Xray"""
+    # 获取路径
+    path = request.path
+    
+    # 确定转发目标端口
+    if path.startswith('/vless-argo'):
+        target_port = 3003
+    elif path.startswith('/vmess-argo'):
+        target_port = 3004
+    elif path.startswith('/trojan-argo'):
+        target_port = 3005
+    elif path == '/vless' or path == '/vmess' or path == '/trojan':
+        target_port = 3001
+    else:
+        # 如果不是已知的WebSocket路径，返回404
+        return web.Response(status=404)
+    
+    # 构建目标URL
+    target_url = f"ws://localhost:{target_port}{path}"
+    
+    # 如果有查询参数，添加到目标URL
+    if request.query_string:
+        target_url += f"?{request.query_string}"
+    
+    logger.info(f"Proxying WebSocket from {path} to {target_url}")
+    
+    # 创建WebSocket响应
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
+    
+    try:
+        # 连接到目标WebSocket服务器
+        async with aiohttp.ClientSession() as session:
+            async with session.ws_connect(target_url) as target_ws:
+                # 创建两个任务来双向转发数据
+                client_to_target = asyncio.create_task(forward_websocket(ws, target_ws, "client->target"))
+                target_to_client = asyncio.create_task(forward_websocket(target_ws, ws, "target->client"))
+                
+                # 等待任意一个任务完成
+                done, pending = await asyncio.wait(
+                    [client_to_target, target_to_client],
+                    return_when=asyncio.FIRST_COMPLETED
+                )
+                
+                # 取消另一个任务
+                for task in pending:
+                    task.cancel()
+                
+                # 等待被取消的任务结束
+                for task in pending:
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+    except Exception as e:
+        logger.error(f"Error proxying WebSocket: {e}")
+        if not ws.closed:
+            await ws.close()
+    
+    return ws
+
+async def forward_websocket(source_ws, target_ws, label):
+    """转发WebSocket消息"""
+    try:
+        async for msg in source_ws:
+            if msg.type == aiohttp.WSMsgType.TEXT:
+                await target_ws.send_str(msg.data)
+            elif msg.type == aiohttp.WSMsgType.BINARY:
+                await target_ws.send_bytes(msg.data)
+            elif msg.type == aiohttp.WSMsgType.CLOSE:
+                await target_ws.close()
+                break
+            elif msg.type == aiohttp.WSMsgType.ERROR:
+                logger.error(f"WebSocket error in {label}: {source_ws.exception()}")
+                break
+    except Exception as e:
+        logger.error(f"Error in {label}: {e}")
+        if not target_ws.closed:
+            await target_ws.close()
+
+async def http_proxy_handler(request):
+    """处理HTTP代理请求"""
+    # 获取路径
+    path = request.path
+    
+    # 确定转发目标端口
+    if path.startswith('/vless-argo') or path.startswith('/vmess-argo') or path.startswith('/trojan-argo'):
+        target_port = 3001
+    else:
+        target_port = PORT
+    
+    # 构建目标URL
+    target_url = f"http://localhost:{target_port}{path}"
+    if request.query_string:
+        target_url += f"?{request.query_string}"
+    
+    logger.info(f"Proxying HTTP from {path} to {target_url}")
+    
+    # 转发HTTP请求
+    try:
+        async with aiohttp.ClientSession() as session:
+            # 获取原始请求的方法、头部和body
+            method = request.method
+            headers = dict(request.headers)
+            
+            # 移除不必要的头部
+            headers.pop('Host', None)
+            
+            # 读取请求body
+            if request.can_read_body:
+                body = await request.read()
+            else:
+                body = None
+            
+            # 发送请求到目标服务器
+            async with session.request(
+                method=method,
+                url=target_url,
+                headers=headers,
+                data=body,
+                timeout=aiohttp.ClientTimeout(total=30)
+            ) as response:
+                # 获取响应数据
+                resp_body = await response.read()
+                
+                # 创建响应
+                return web.Response(
+                    body=resp_body,
+                    status=response.status,
+                    headers=dict(response.headers)
+                )
+    except Exception as e:
+        logger.error(f"Error proxying HTTP request: {e}")
+        return web.Response(status=502, text="Bad Gateway")
+
+def start_server():
+    """启动服务器"""
+    logger.info('Starting server initialization...')
+    
+    delete_nodes()
+    cleanup_old_files()
+    
+    argo_type()
+    generate_config()
+    download_files_and_run()
+    
+    # 等待隧道启动
+    logger.info('Waiting for tunnel startup...')
+    time.sleep(5)
+    
+    extract_domains()
+    add_visit_task()
+    
+    logger.info('Server initialization complete')
+
 def signal_handler(signum, frame):
     """信号处理"""
-    logger.info(f"Received shutdown signal {signum}, cleaning up...")
+    logger.info("Received shutdown signal, cleaning up...")
     
     if monitor_process and monitor_process.poll() is None:
         logger.info("Stopping monitor script...")
@@ -773,70 +1002,95 @@ def signal_handler(signum, frame):
     logger.info("Program exited")
     sys.exit(0)
 
-async def start_aiohttp_server():
-    """启动aiohttp服务器"""
+async def init_app():
+    """初始化aiohttp应用"""
     app = web.Application()
     
-    # 路由配置
+    # 添加路由
     app.router.add_get('/', handle_index)
-    app.router.add_get('/health', handle_health)
-    app.router.add_get(f'/{SUB_PATH}', handle_subscription)
+    app.router.add_get(f'/{SUB_PATH}', handle_sub)
     
-    # WebSocket代理路由
-    app.router.add_get('/vless-argo', websocket_proxy)
-    app.router.add_get('/vmess-argo', websocket_proxy)
-    app.router.add_get('/trojan-argo', websocket_proxy)
+    # WebSocket路由
+    ws_routes = [
+        '/vless-argo', '/vmess-argo', '/trojan-argo',
+        '/vless', '/vmess', '/trojan'
+    ]
     
-    # 静态文件服务（可选）
-    static_path = Path(__file__).parent / 'static'
-    if static_path.exists():
-        app.router.add_static('/static/', static_path)
+    # 为每个WebSocket路由添加处理器
+    for route in ws_routes:
+        app.router.add_get(route, websocket_handler)
     
+    # 其他HTTP请求使用代理
+    app.router.add_route('*', '/{path:.*}', http_proxy_handler)
+    
+    return app
+
+async def start_aiohttp_server():
+    """启动aiohttp服务器"""
+    app = await init_app()
+    
+    # 创建运行器
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', server_port)
+    
+    # 启动站点
+    site = web.TCPSite(runner, '0.0.0.0', ARGO_PORT)
     await site.start()
     
-    logger.info(f"HTTP/WebSocket server running on port: {server_port}")
-    logger.info(f"Subscription endpoint: /{SUB_PATH}")
-    logger.info(f"WebSocket endpoints: /vless-argo, /vmess-argo, /trojan-argo")
+    logger.info(f"aiohttp server running on port {ARGO_PORT}")
     
+    # 保持服务器运行
     return runner
 
-async def main():
-    """主异步函数"""
+def main():
+    """主函数"""
     # 注册信号处理
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
     
-    # 启动服务器初始化
-    init_task = asyncio.create_task(start_server())
+    # 启动主服务（在新的线程中）
+    server_thread = threading.Thread(target=start_server, daemon=True)
+    server_thread.start()
+    
+    # 启动监控脚本（在新的线程中，延迟10秒）
+    def start_monitor():
+        time.sleep(10)
+        if download_monitor_script():
+            run_monitor_script()
+    
+    monitor_thread = threading.Thread(target=start_monitor, daemon=True)
+    monitor_thread.start()
+    
+    # 清理文件（在新的线程中）
+    clean_thread = threading.Thread(target=clean_files, daemon=True)
+    clean_thread.start()
     
     # 启动aiohttp服务器
-    runner = await start_aiohttp_server()
-    
-    # 等待初始化完成
-    await init_task
-    
-    # 启动清理任务
-    clean_files()
-    
-    # 保持运行
     try:
-        while True:
-            await asyncio.sleep(3600)  # 每小时检查一次
-    except asyncio.CancelledError:
-        pass
-    finally:
-        # 清理
-        await runner.cleanup()
-        process_manager.cleanup()
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        logger.info(f"Starting aiohttp server on port {ARGO_PORT}")
+        logger.info(f"HTTP traffic -> localhost:{PORT}")
+        logger.info(f"Xray WebSocket traffic -> localhost:3001,3003,3004,3005")
+        
+        runner = loop.run_until_complete(start_aiohttp_server())
+        
+        try:
+            loop.run_forever()
+        except KeyboardInterrupt:
+            logger.info("Server stopped by user")
+        finally:
+            loop.run_until_complete(runner.cleanup())
+    except Exception as e:
+        logger.error(f"Error starting aiohttp server: {e}")
 
 if __name__ == '__main__':
+    # 确保requests库可用
     try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("Shutting down...")
-    except Exception as e:
-        logger.error(f"Unexpected error: {e}")
+        import requests
+    except ImportError:
+        logger.error("Please install requests library: pip install requests")
         sys.exit(1)
+    
+    main()

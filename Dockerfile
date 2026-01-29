@@ -1,9 +1,9 @@
-# 第一阶段：构建依赖
+# 第一阶段：构建阶段
 FROM python:3.9-slim AS builder
 
 WORKDIR /app
 
-# 安装系统依赖
+# 安装构建依赖
 RUN apt-get update && apt-get install -y \
     curl \
     wget \
@@ -28,7 +28,7 @@ WORKDIR /app
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# 安装运行时依赖（不包含构建工具）
+# 安装运行时依赖
 RUN apt-get update && apt-get install -y \
     curl \
     bash \
@@ -42,13 +42,31 @@ RUN apt-get update && apt-get install -y \
 # 复制应用文件
 COPY app.py .
 COPY index.html .
-COPY requirements.txt .
 
 # 创建必要的目录
 RUN mkdir -p /app/tmp
 
-# 设置环境变量
-ENV FILE_PATH=/app/tmp
+# 设置环境变量默认值
+ENV UPLOAD_URL=""
+ENV PROJECT_URL=""
+ENV AUTO_ACCESS="false"
+ENV FILE_PATH="/app/tmp"
+ENV SUB_PATH="sub"
+ENV SERVER_PORT="3000"
+ENV PORT="3000"
+ENV UUID="e2cae6af-5cdd-fa48-4137-ad3e617fbab0"
+ENV NEZHA_SERVER=""
+ENV NEZHA_PORT=""
+ENV NEZHA_KEY=""
+ENV ARGO_DOMAIN=""
+ENV ARGO_AUTH=""
+ENV ARGO_PORT="7860"
+ENV CFIP="cdns.doon.eu.org"
+ENV CFPORT="443"
+ENV NAME=""
+ENV MONITOR_KEY=""
+ENV MONITOR_SERVER=""
+ENV MONITOR_URL=""
 ENV PYTHONUNBUFFERED=1
 
 # 创建非root用户运行应用
@@ -57,8 +75,11 @@ RUN useradd -m -u 1000 appuser && \
 USER appuser
 
 # 暴露端口
-EXPOSE 7860
+EXPOSE 7860 3000
+
+# 健康检查
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:3000/ || exit 1
 
 # 运行应用
 CMD ["python", "app.py"]
-

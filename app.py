@@ -826,9 +826,10 @@ async def handle_sub(request):
         try:
             test = base64.b64decode(sub_encoded)
             logger.info(f"返回订阅内容，长度: {len(sub_encoded)}")
+            # 修复: 不要将charset包含在content_type参数中
             return web.Response(
                 text=sub_encoded,
-                content_type='text/plain; charset=utf-8'
+                content_type='text/plain'
             )
         except Exception as e:
             logger.error(f"订阅内容base64解码失败: {e}")
@@ -836,7 +837,7 @@ async def handle_sub(request):
             if sub_txt:
                 return web.Response(
                     text=sub_txt,
-                    content_type='text/plain; charset=utf-8'
+                    content_type='text/plain'
                 )
             else:
                 return web.Response(status=503, text="Subscription not ready yet. Please wait a moment and try again.")
@@ -1097,21 +1098,6 @@ async def init_app():
     
     # 其他HTTP请求
     app.router.add_route('*', '/{path:.*}', proxy_xray_http)
-    
-    # 添加中间件来处理未捕获的异常
-    @web.middleware
-    async def error_middleware(request, handler):
-        try:
-            response = await handler(request)
-            return response
-        except web.HTTPException as ex:
-            # 如果是HTTP异常，直接返回
-            raise
-        except Exception as e:
-            logger.error(f"处理请求时未捕获的异常: {e}")
-            return web.Response(status=500, text=f"Internal Server Error: {str(e)}")
-    
-    app.middlewares.append(error_middleware)
     
     return app
 

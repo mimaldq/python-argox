@@ -599,7 +599,7 @@ def extract_domains():
                 time.sleep(3)
                 extract_domains()
         except Exception as e:
-            logger.error(f'读取boot.log错误: {e}")
+            logger.error(f'读取boot.log错误: {e}')
 
 def kill_bot_process():
     """停止bot进程"""

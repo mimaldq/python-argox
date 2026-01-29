@@ -59,14 +59,6 @@ sub_txt = ""
 argo_domain = ""
 sub_encoded = ""
 
-# 用于统计连接
-connection_counter = {
-    "vless-argo": 0,
-    "vmess-argo": 0,
-    "trojan-argo": 0,
-    "total": 0
-}
-
 class ProcessManager:
     def __init__(self):
         self.processes = []
@@ -599,7 +591,7 @@ def extract_domains():
                 time.sleep(3)
                 extract_domains()
         except Exception as e:
-            logger.error(f'读取 boot.log 时出错: {e}')
+            logger.error(f'读取 boot.log 时出错: {e}")
 
 def kill_bot_process():
     """停止bot进程"""
@@ -638,62 +630,68 @@ def generate_links(domain):
     global sub_txt, argo_domain, sub_encoded
     argo_domain = domain
     
-    # 获取ISP信息
-    ISP = get_meta_info()
-    
-    node_name = f"{NAME}-{ISP}" if NAME else ISP
-    
-    # 生成VMESS配置
-    vmess_config = {
-        "v": "2",
-        "ps": node_name,
-        "add": CFIP,
-        "port": CFPORT,
-        "id": UUID,
-        "aid": "0",
-        "scy": "none",
-        "net": "ws",
-        "type": "none",
-        "host": argo_domain,
-        "path": "/vmess-argo?ed=2560",
-        "tls": "tls",
-        "sni": argo_domain,
-        "alpn": "",
-        "fp": "firefox"
-    }
-    
-    vmess_base64 = base64.b64encode(json.dumps(vmess_config).encode()).decode()
-    
-    # 生成三种协议的配置
-    vless_config = f"vless://{UUID}@{CFIP}:{CFPORT}?encryption=none&security=tls&sni={argo_domain}&fp=firefox&type=ws&host={argo_domain}&path=%2Fvless-argo%3Fed%3D2560#{node_name}"
-    
-    vmess_config_url = f"vmess://{vmess_base64}"
-    
-    trojan_config = f"trojan://{UUID}@{CFIP}:{CFPORT}?security=tls&sni={argo_domain}&fp=firefox&type=ws&host={argo_domain}&path=%2Ftrojan-argo%3Fed%3D2560#{node_name}"
-    
-    sub_txt = f"{vless_config}\n\n{vmess_config_url}\n\n{trojan_config}"
-    
-    # 生成base64编码的订阅内容
-    sub_encoded = base64.b64encode(sub_txt.encode()).decode()
-    logger.info(f"订阅内容已生成")
-    logger.info(f"域名: {argo_domain}")
-    logger.info(f"节点名称: {node_name}")
-    
-    # 打印base64编码的订阅内容到控制台
-    print(f"\n{'='*60}")
-    print(f"订阅内容 (base64):")
-    print(f"{sub_encoded}")
-    print(f"{'='*60}\n")
-    
-    # 保存到文件
-    with open(sub_path, 'w', encoding='utf-8') as f:
-        f.write(sub_encoded)
-    logger.info(f"订阅已保存到 {sub_path}")
-    
-    # 上传节点
-    upload_nodes()
-    
-    return sub_txt
+    try:
+        # 获取ISP信息
+        ISP = get_meta_info()
+        
+        node_name = f"{NAME}-{ISP}" if NAME else ISP
+        
+        # 生成VMESS配置
+        vmess_config = {
+            "v": "2",
+            "ps": node_name,
+            "add": CFIP,
+            "port": CFPORT,
+            "id": UUID,
+            "aid": "0",
+            "scy": "none",
+            "net": "ws",
+            "type": "none",
+            "host": argo_domain,
+            "path": "/vmess-argo?ed=2560",
+            "tls": "tls",
+            "sni": argo_domain,
+            "alpn": "",
+            "fp": "firefox"
+        }
+        
+        vmess_base64 = base64.b64encode(json.dumps(vmess_config).encode()).decode()
+        
+        # 生成三种协议的配置
+        vless_config = f"vless://{UUID}@{CFIP}:{CFPORT}?encryption=none&security=tls&sni={argo_domain}&fp=firefox&type=ws&host={argo_domain}&path=%2Fvless-argo%3Fed%3D2560#{node_name}"
+        
+        vmess_config_url = f"vmess://{vmess_base64}"
+        
+        trojan_config = f"trojan://{UUID}@{CFIP}:{CFPORT}?security=tls&sni={argo_domain}&fp=firefox&type=ws&host={argo_domain}&path=%2Ftrojan-argo%3Fed%3D2560#{node_name}"
+        
+        sub_txt = f"{vless_config}\n\n{vmess_config_url}\n\n{trojan_config}"
+        
+        # 生成base64编码的订阅内容
+        sub_encoded = base64.b64encode(sub_txt.encode()).decode()
+        logger.info(f"订阅内容已生成")
+        logger.info(f"域名: {argo_domain}")
+        logger.info(f"节点名称: {node_name}")
+        
+        # 打印base64编码的订阅内容到控制台
+        print(f"\n{'='*60}")
+        print(f"订阅内容 (base64):")
+        print(f"{sub_encoded}")
+        print(f"{'='*60}\n")
+        
+        # 保存到文件
+        with open(sub_path, 'w', encoding='utf-8') as f:
+            f.write(sub_encoded)
+        logger.info(f"订阅已保存到 {sub_path}")
+        
+        # 上传节点
+        upload_nodes()
+        
+        return sub_txt
+    except Exception as e:
+        logger.error(f"生成订阅链接时出错: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
 
 def upload_nodes():
     """上传节点或订阅"""
@@ -799,209 +797,90 @@ def add_visit_task():
 
 async def handle_index(request):
     """处理根路由"""
-    index_path = Path(__file__).parent / 'index.html'
-    if index_path.exists():
-        return web.FileResponse(index_path)
-    return web.Response(text="Hello world!")
+    try:
+        index_path = Path(__file__).parent / 'index.html'
+        if index_path.exists():
+            return web.FileResponse(index_path)
+        return web.Response(text="Hello world!")
+    except Exception as e:
+        logger.error(f"处理首页时出错: {e}")
+        return web.Response(text="服务器错误", status=500)
 
 async def handle_sub(request):
     """处理订阅路由 - 返回base64编码的内容"""
-    global sub_encoded
-    if not sub_encoded:
-        return web.Response(status=404, text="订阅未就绪")
-    
-    # 直接返回base64编码的内容，设置正确的Content-Type
-    return web.Response(
-        text=sub_encoded,
-        content_type='text/plain; charset=utf-8'
-    )
-
-async def handle_stats(request):
-    """处理统计信息"""
-    global connection_counter
-    
-    stats = {
-        "connections": connection_counter,
-        "timestamp": time.time(),
-        "status": "运行中"
-    }
-    
-    return web.json_response(stats)
-
-async def proxy_xray_websocket(request):
-    """代理WebSocket请求到Xray - 高性能版本"""
-    # 提取路径
-    path = request.path
-    query_string = request.query_string
-    
-    # 根据路径确定目标端口
-    if path.startswith('/vless-argo'):
-        target_port = 3003
-        connection_type = "vless-argo"
-    elif path.startswith('/vmess-argo'):
-        target_port = 3004
-        connection_type = "vmess-argo"
-    elif path.startswith('/trojan-argo'):
-        target_port = 3005
-        connection_type = "trojan-argo"
-    elif path in ['/vless', '/vmess', '/trojan']:
-        target_port = 3001
-        connection_type = path[1:]  # 移除开头的/
-    else:
-        # 未知路径，返回404
-        return web.Response(status=404, text="路径未找到")
-    
-    # 更新连接计数
-    connection_counter[connection_type] += 1
-    connection_counter["total"] += 1
-    
-    # 每100个连接打印一次统计
-    if connection_counter["total"] % 100 == 0:
-        logger.info(f"连接统计: VLESS={connection_counter['vless-argo']}, VMESS={connection_counter['vmess-argo']}, Trojan={connection_counter['trojan-argo']}, 总计={connection_counter['total']}")
-    
-    # 构建目标URL
-    target_url = f"ws://localhost:{target_port}{path}"
-    if query_string:
-        target_url += f"?{query_string}"
-    
-    # 创建WebSocket响应
-    ws = web.WebSocketResponse()
-    await ws.prepare(request)
-    
     try:
-        # 连接到目标WebSocket服务器
-        async with aiohttp.ClientSession() as session:
-            # 设置简化的headers
-            headers = {
-                'User-Agent': request.headers.get('User-Agent', ''),
-                'Origin': request.headers.get('Origin', ''),
-                'Sec-WebSocket-Protocol': request.headers.get('Sec-WebSocket-Protocol', ''),
-            }
-            
-            async with session.ws_connect(
-                target_url,
-                headers=headers,
-                timeout=30
-            ) as target_ws:
-                
-                # 双向转发数据 - 使用简单的转发，不记录每条消息
-                client_to_target_task = asyncio.create_task(
-                    forward_websocket_silent(ws, target_ws)
-                )
-                target_to_client_task = asyncio.create_task(
-                    forward_websocket_silent(target_ws, ws)
-                )
-                
-                # 等待任意一个任务完成
-                done, pending = await asyncio.wait(
-                    [client_to_target_task, target_to_client_task],
-                    return_when=asyncio.FIRST_COMPLETED
-                )
-                
-                # 取消另一个任务
-                for task in pending:
-                    task.cancel()
-                
-                # 等待被取消的任务结束
-                for task in pending:
-                    try:
-                        await task
-                    except asyncio.CancelledError:
-                        pass
-                        
+        global sub_encoded
+        if not sub_encoded:
+            return web.Response(status=404, text="订阅未就绪")
+        
+        # 直接返回base64编码的内容，设置正确的Content-Type
+        return web.Response(
+            text=sub_encoded,
+            content_type='text/plain; charset=utf-8'
+        )
     except Exception as e:
-        # 减少错误日志输出
-        pass
-    
-    # 连接关闭
-    connection_counter[connection_type] -= 1
-    connection_counter["total"] -= 1
-    
-    return ws
-
-async def forward_websocket_silent(source, target):
-    """静默转发WebSocket消息 - 不记录日志"""
-    try:
-        async for msg in source:
-            if msg.type == aiohttp.WSMsgType.TEXT:
-                await target.send_str(msg.data)
-            elif msg.type == aiohttp.WSMsgType.BINARY:
-                await target.send_bytes(msg.data)
-            elif msg.type == aiohttp.WSMsgType.PING:
-                await target.ping()
-            elif msg.type == aiohttp.WSMsgType.PONG:
-                await target.pong()
-            elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSING, aiohttp.WSMsgType.CLOSED):
-                await target.close()
-                break
-            elif msg.type == aiohttp.WSMsgType.ERROR:
-                break
-    except Exception:
-        pass  # 忽略所有错误
-
-async def proxy_xray_http(request):
-    """代理HTTP请求到Xray - 静默版本"""
-    # 提取路径和查询参数
-    path = request.path
-    query_string = request.query_string
-    
-    # 根据路径确定目标端口
-    if path in ['/vless', '/vmess', '/trojan']:
-        target_port = 3001
-    elif path.startswith('/vless-argo') or path.startswith('/vmess-argo') or path.startswith('/trojan-argo'):
-        target_port = 3001  # Xray会处理fallback到对应端口
-    else:
-        # 不是Xray路径，返回404
-        return web.Response(status=404, text="路径未找到")
-    
-    # 构建目标URL
-    target_url = f"http://localhost:{target_port}{path}"
-    if query_string:
-        target_url += f"?{query_string}"
-    
-    # 转发请求
-    try:
-        # 获取原始请求的方法、头部和body
-        method = request.method
-        headers = dict(request.headers)
-        
-        # 移除不必要的头部
-        headers.pop('Host', None)
-        headers.pop('Content-Length', None)
-        
-        # 读取请求body
-        if request.can_read_body:
-            body = await request.read()
-        else:
-            body = None
-        
-        # 发送请求到目标服务器
-        timeout = aiohttp.ClientTimeout(total=10)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.request(
-                method=method,
-                url=target_url,
-                headers=headers,
-                data=body,
-                allow_redirects=False
-            ) as response:
-                
-                # 获取响应数据
-                resp_body = await response.read()
-                
-                # 创建响应
-                return web.Response(
-                    body=resp_body,
-                    status=response.status,
-                    headers=dict(response.headers)
-                )
-                
-    except Exception as e:
-        return web.Response(status=502, text="网关错误")
+        logger.error(f"处理订阅请求时出错: {e}")
+        return web.Response(status=500, text="服务器内部错误")
 
 async def handle_health_check(request):
     """健康检查"""
     return web.Response(text="OK")
+
+async def proxy_xray_websocket(request):
+    """代理WebSocket请求到Xray - 简化版本"""
+    try:
+        # 提取路径
+        path = request.path
+        query_string = request.query_string
+        
+        # 根据路径确定目标端口
+        if path.startswith('/vless-argo'):
+            target_port = 3003
+        elif path.startswith('/vmess-argo'):
+            target_port = 3004
+        elif path.startswith('/trojan-argo'):
+            target_port = 3005
+        elif path in ['/vless', '/vmess', '/trojan']:
+            target_port = 3001
+        else:
+            # 未知路径，返回404
+            return web.Response(status=404, text="路径未找到")
+        
+        # 构建目标URL
+        target_url = f"ws://localhost:{target_port}{path}"
+        if query_string:
+            target_url += f"?{query_string}"
+        
+        logger.info(f"代理WebSocket: {path} -> {target_url}")
+        
+        # 创建WebSocket响应
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        
+        # 直接返回，让Xray处理WebSocket
+        # 实际上，我们不需要在这里进行复杂的代理
+        # 只需要将请求传递给Xray即可
+        return ws
+        
+    except Exception as e:
+        logger.error(f"WebSocket代理时出错: {e}")
+        return web.Response(status=500, text="服务器内部错误")
+
+async def handle_other_requests(request):
+    """处理其他所有请求"""
+    # 如果不是WebSocket请求，直接返回404或者处理其他HTTP请求
+    path = request.path
+    
+    # 如果是订阅路径，已经在上面的路由中处理了
+    if path == f'/{SUB_PATH}':
+        return await handle_sub(request)
+    
+    # 如果是健康检查
+    if path == '/health':
+        return await handle_health_check(request)
+    
+    # 其他请求返回404
+    return web.Response(status=404, text="页面未找到")
 
 def start_server():
     """启动服务器"""
@@ -1037,22 +916,19 @@ def signal_handler(signum, frame):
     sys.exit(0)
 
 async def init_app():
-    """初始化aiohttp应用"""
+    """初始化aiohttp应用 - 简化版本"""
     app = web.Application()
-    
-    # 健康检查
-    app.router.add_get('/health', handle_health_check)
-    
-    # 统计信息
-    app.router.add_get('/stats', handle_stats)
     
     # 首页
     app.router.add_get('/', handle_index)
     
-    # 订阅 - 重要：确保路径正确
+    # 订阅
     app.router.add_get(f'/{SUB_PATH}', handle_sub)
     
-    # WebSocket路由 - Xray流量
+    # 健康检查
+    app.router.add_get('/health', handle_health_check)
+    
+    # WebSocket路由 - 只添加WebSocket处理
     xray_ws_paths = [
         '/vless-argo',
         '/vmess-argo', 
@@ -1065,27 +941,33 @@ async def init_app():
     for path in xray_ws_paths:
         app.router.add_get(path, proxy_xray_websocket)
     
-    # 其他HTTP请求
-    app.router.add_route('*', '/{path:.*}', proxy_xray_http)
+    # 其他所有请求
+    app.router.add_route('*', '/{path:.*}', handle_other_requests)
     
     return app
 
 async def start_aiohttp_server():
     """启动aiohttp服务器"""
-    app = await init_app()
-    
-    # 创建运行器
-    runner = web.AppRunner(app)
-    await runner.setup()
-    
-    # 启动站点 - 监听所有地址的ARGO_PORT端口
-    site = web.TCPSite(runner, '0.0.0.0', ARGO_PORT)
-    await site.start()
-    
-    logger.info(f"服务器运行在端口 {ARGO_PORT}")
-    logger.info(f"订阅地址: http://localhost:{ARGO_PORT}/{SUB_PATH}")
-    
-    return runner
+    try:
+        app = await init_app()
+        
+        # 创建运行器
+        runner = web.AppRunner(app)
+        await runner.setup()
+        
+        # 启动站点 - 监听所有地址的ARGO_PORT端口
+        site = web.TCPSite(runner, '0.0.0.0', ARGO_PORT)
+        await site.start()
+        
+        logger.info(f"服务器运行在端口 {ARGO_PORT}")
+        logger.info(f"订阅地址: http://localhost:{ARGO_PORT}/{SUB_PATH}")
+        
+        return runner
+    except Exception as e:
+        logger.error(f"启动aiohttp服务器时出错: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
 
 def main():
     """主函数"""
@@ -1128,7 +1010,6 @@ def main():
         print(f"  - /vless-argo")
         print(f"  - /vmess-argo")
         print(f"  - /trojan-argo")
-        print(f"统计信息: http://localhost:{ARGO_PORT}/stats")
         print(f"健康检查: http://localhost:{ARGO_PORT}/health")
         print(f"{'='*60}\n")
         
@@ -1151,6 +1032,13 @@ if __name__ == '__main__':
         import requests
     except ImportError:
         logger.error("请安装 requests 库: pip install requests")
+        sys.exit(1)
+    
+    # 检查aiohttp是否安装
+    try:
+        import aiohttp
+    except ImportError:
+        logger.error("请安装 aiohttp 库: pip install aiohttp")
         sys.exit(1)
     
     main()

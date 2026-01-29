@@ -99,13 +99,15 @@ bot_name = generate_random_name()
 php_name = generate_random_name()
 monitor_name = 'cf-vps-monitor.sh'
 
-# 文件路径
+# 文件路径 - 临时文件放在FILE_PATH中
 npm_path = file_path / npm_name
 php_path = file_path / php_name
 web_path = file_path / web_name
 bot_path = file_path / bot_name
 monitor_path = file_path / monitor_name
-sub_path = file_path / 'sub.txt'
+
+# 订阅文件放在主目录下
+sub_path = Path('sub.txt')  # 主目录下的sub.txt
 list_path = file_path / 'list.txt'
 boot_log_path = file_path / 'boot.log'
 config_path = file_path / 'config.json'
@@ -144,7 +146,7 @@ def delete_nodes():
         logger.error(f"删除节点函数出错: {e}")
 
 def cleanup_old_files():
-    """清理历史文件"""
+    """清理历史文件 - 只清理临时文件夹，不清理主目录的sub.txt"""
     try:
         for file in file_path.iterdir():
             try:
@@ -688,10 +690,10 @@ def generate_links(domain):
     print(sub_encoded)
     print("\n" + "="*60)
     
-    # 保存到文件
+    # 保存到主目录下的sub.txt文件
     with open(sub_path, 'w', encoding='utf-8') as f:
         f.write(sub_encoded)
-    logger.info(f"订阅已保存到 {sub_path}")
+    logger.info(f"订阅已保存到 {sub_path.absolute()}")
     logger.info(f"节点域名: {argo_domain}")
     logger.info(f"节点名称: {node_name}")
     
@@ -758,7 +760,7 @@ def upload_nodes():
         return None
 
 def clean_files():
-    """清理文件"""
+    """清理文件 - 只清理临时文件，不清理主目录的sub.txt"""
     def cleanup():
         time.sleep(90)  # 90秒后清理
         
@@ -769,7 +771,7 @@ def clean_files():
         elif NEZHA_SERVER and NEZHA_KEY:
             files_to_delete.append(php_path)
         
-        # 删除文件
+        # 删除临时文件夹中的文件，但不删除主目录的sub.txt
         for file in files_to_delete:
             try:
                 if file.exists():
@@ -779,6 +781,7 @@ def clean_files():
         
         logger.info('应用正在运行')
         logger.info('感谢使用此脚本，享受吧！')
+        logger.info(f'订阅文件保存在: {sub_path.absolute()}')
     
     # 在新线程中运行清理
     threading.Thread(target=cleanup, daemon=True).start()
@@ -813,8 +816,18 @@ async def handle_sub(request):
     """处理订阅路由"""
     global sub_encoded
     if not sub_encoded:
-        logger.error("订阅内容未准备好")
-        return web.Response(status=404, text="Subscription not ready")
+        # 如果内存中没有订阅内容，尝试从主目录的sub.txt文件读取
+        try:
+            if sub_path.exists():
+                with open(sub_path, 'r', encoding='utf-8') as f:
+                    sub_encoded = f.read()
+                    logger.info(f"从文件 {sub_path} 读取订阅内容")
+            else:
+                logger.error("订阅内容未准备好，且文件不存在")
+                return web.Response(status=404, text="Subscription not ready")
+        except Exception as e:
+            logger.error(f"读取订阅文件失败: {e}")
+            return web.Response(status=404, text="Subscription not ready")
     
     try:
         # 验证sub_encoded是否为有效的base64
@@ -1100,6 +1113,7 @@ async def start_aiohttp_server():
     
     logger.info(f"服务器运行在端口 {ARGO_PORT}")
     logger.info(f"订阅地址: http://localhost:{ARGO_PORT}/{SUB_PATH}")
+    logger.info(f"订阅文件保存在: {sub_path.absolute()}")
     
     return runner
 
@@ -1140,6 +1154,7 @@ def main():
         print(f"\n{'='*60}")
         print(f"服务器运行在端口 {ARGO_PORT}")
         print(f"订阅地址: http://localhost:{ARGO_PORT}/{SUB_PATH}")
+        print(f"订阅文件位置: {sub_path.absolute()}")
         print(f"WebSocket路径: /vless-argo, /vmess-argo, /trojan-argo")
         print(f"状态统计: http://localhost:{ARGO_PORT}/stats")
         print(f"健康检查: http://localhost:{ARGO_PORT}/health")

@@ -18,10 +18,11 @@ import yaml
 import uuid as uuid_module
 import requests
 
-# 设置日志
+# 设置中文日志
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger(__name__)
 
@@ -49,7 +50,7 @@ MONITOR_URL = os.getenv('MONITOR_URL', '')
 # 创建运行文件夹
 file_path = Path(FILE_PATH)
 file_path.mkdir(exist_ok=True, parents=True)
-logger.info(f"{FILE_PATH} created or already exists")
+logger.info(f"目录 {FILE_PATH} 已创建或已存在")
 
 # 全局变量
 monitor_process = None
@@ -57,6 +58,14 @@ processes = []
 sub_txt = ""
 argo_domain = ""
 sub_encoded = ""
+
+# 用于统计连接
+connection_counter = {
+    "vless-argo": 0,
+    "vmess-argo": 0,
+    "trojan-argo": 0,
+    "total": 0
+}
 
 class ProcessManager:
     def __init__(self):
@@ -75,7 +84,7 @@ class ProcessManager:
                     except subprocess.TimeoutExpired:
                         process.kill()
             except Exception as e:
-                logger.error(f"Error killing process: {e}")
+                logger.error(f"结束进程时出错: {e}")
 
 process_manager = ProcessManager()
 
@@ -128,11 +137,11 @@ def delete_nodes():
                 timeout=10
             )
             if response.status_code == 200:
-                logger.info("Nodes deleted successfully")
+                logger.info("节点删除成功")
         except Exception as e:
-            logger.error(f"Error deleting nodes: {e}")
+            logger.error(f"删除节点时出错: {e}")
     except Exception as e:
-        logger.error(f"Error in delete_nodes: {e}")
+        logger.error(f"delete_nodes 函数出错: {e}")
 
 def cleanup_old_files():
     """清理历史文件"""
@@ -144,7 +153,7 @@ def cleanup_old_files():
             except Exception:
                 pass  # 忽略错误
     except Exception as e:
-        logger.error(f"Error cleaning old files: {e}")
+        logger.error(f"清理旧文件时出错: {e}")
 
 def generate_config():
     """生成Xray配置文件"""
@@ -281,7 +290,7 @@ def generate_config():
     
     with open(config_path, 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=2)
-    logger.info("Xray config file generated")
+    logger.info("Xray 配置文件生成完成")
 
 def get_system_architecture():
     """获取系统架构"""
@@ -303,10 +312,10 @@ def download_file(url, filepath):
         
         # 设置可执行权限
         filepath.chmod(0o755)
-        logger.info(f"Downloaded {filepath.name} successfully")
+        logger.info(f"下载 {filepath.name} 成功")
         return True
     except Exception as e:
-        logger.error(f"Failed to download {url}: {e}")
+        logger.error(f"下载 {url} 失败: {e}")
         return False
 
 def get_files_for_architecture(architecture):
@@ -353,7 +362,7 @@ def run_process(cmd, detach=False):
             result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
             return result
     except Exception as e:
-        logger.error(f"Error running command {cmd}: {e}")
+        logger.error(f"运行命令 {cmd} 时出错: {e}")
         return None
 
 def download_files_and_run():
@@ -362,13 +371,13 @@ def download_files_and_run():
     files_to_download = get_files_for_architecture(architecture)
     
     if not files_to_download:
-        logger.error("No files found for current architecture")
+        logger.error("无法找到适合当前架构的文件")
         return
     
     # 下载文件
     for filepath, url in files_to_download:
         if not download_file(url, filepath):
-            logger.error(f"Failed to download {filepath.name}")
+            logger.error(f"下载 {filepath.name} 失败")
             return
     
     # 运行哪吒监控
@@ -406,7 +415,7 @@ uuid: {UUID}"""
             # 运行哪吒v1
             cmd = f"{php_path} -c {file_path / 'config.yaml'}"
             run_process(cmd, detach=True)
-            logger.info(f"{php_name} is running")
+            logger.info(f"{php_name} 运行中")
             time.sleep(1)
         else:
             # 哪吒v0
@@ -423,15 +432,15 @@ uuid: {UUID}"""
             
             cmd = f"{npm_path} {' '.join(args)}"
             run_process(cmd, detach=True)
-            logger.info(f"{npm_name} is running")
+            logger.info(f"{npm_name} 运行中")
             time.sleep(1)
     else:
-        logger.info("Nezha variables are empty, skipping")
+        logger.info("哪吒监控变量为空，跳过运行")
     
     # 运行Xray
     cmd = f"{web_path} -c {config_path}"
     run_process(cmd, detach=True)
-    logger.info(f"{web_name} is running")
+    logger.info(f"{web_name} 运行中")
     time.sleep(1)
     
     # 运行cloudflared
@@ -443,7 +452,7 @@ uuid: {UUID}"""
         elif ARGO_AUTH and 'TunnelSecret' in ARGO_AUTH:
             # 确保隧道配置文件存在
             if not tunnel_yaml_path.exists():
-                logger.info("Waiting for tunnel config file generation...")
+                logger.info("等待隧道配置文件生成...")
                 time.sleep(1)
             
             args.extend(["--config", str(tunnel_yaml_path), "run"])
@@ -456,7 +465,7 @@ uuid: {UUID}"""
         
         cmd = f"{bot_path} {' '.join(args)}"
         run_process(cmd, detach=True)
-        logger.info(f"{bot_name} is running")
+        logger.info(f"{bot_name} 运行中")
         time.sleep(5)
     
     time.sleep(2)
@@ -464,7 +473,7 @@ uuid: {UUID}"""
 def argo_type():
     """配置Argo隧道类型"""
     if not ARGO_AUTH or not ARGO_DOMAIN:
-        logger.info("ARGO_DOMAIN or ARGO_AUTH is empty, using quick tunnel")
+        logger.info("ARGO_DOMAIN 或 ARGO_AUTH 为空，使用快速隧道")
         return
     
     if 'TunnelSecret' in ARGO_AUTH:
@@ -491,20 +500,20 @@ ingress:
 """
             with open(tunnel_yaml_path, 'w', encoding='utf-8') as f:
                 f.write(tunnel_yaml)
-            logger.info('Tunnel YAML config generated successfully')
+            logger.info('隧道 YAML 配置生成成功')
         except Exception as e:
-            logger.error(f'Error generating tunnel config: {e}')
+            logger.error(f'生成隧道配置时出错: {e}')
     else:
-        logger.info("ARGO_AUTH is not TunnelSecret format, using token connection")
+        logger.info("ARGO_AUTH 不是 TunnelSecret 格式，使用 token 连接隧道")
 
 def download_monitor_script():
     """下载监控脚本"""
     if not MONITOR_KEY or not MONITOR_SERVER or not MONITOR_URL:
-        logger.info("Monitor environment variables incomplete, skipping monitor script")
+        logger.info("监控环境变量不完整，跳过监控脚本启动")
         return False
     
     monitor_url = "https://raw.githubusercontent.com/mimaldq/cf-vps-monitor/main/cf-vps-monitor.sh"
-    logger.info(f"Downloading monitor script from {monitor_url}")
+    logger.info(f"从 {monitor_url} 下载监控脚本")
     
     try:
         response = requests.get(monitor_url, timeout=30)
@@ -514,10 +523,10 @@ def download_monitor_script():
             f.write(response.content)
         
         monitor_path.chmod(0o755)
-        logger.info("Monitor script downloaded successfully")
+        logger.info("监控脚本下载完成")
         return True
     except Exception as e:
-        logger.error(f"Failed to download monitor script: {e}")
+        logger.error(f"下载监控脚本失败: {e}")
         return False
 
 def run_monitor_script():
@@ -533,51 +542,23 @@ def run_monitor_script():
         '-u', MONITOR_URL
     ]
     
-    logger.info(f"Running monitor script: {' '.join(cmd)}")
+    logger.info(f"运行监控脚本")
     
     try:
         process = subprocess.Popen(
             cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-            universal_newlines=True
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True
         )
         
         global monitor_process
         monitor_process = process
         
-        # 启动线程读取输出
-        def read_output():
-            while True:
-                output = process.stdout.readline()
-                if output:
-                    logger.info(f"Monitor output: {output.strip()}")
-                error = process.stderr.readline()
-                if error:
-                    logger.error(f"Monitor error: {error.strip()}")
-                
-                if process.poll() is not None:
-                    break
-                time.sleep(0.1)
-        
-        threading.Thread(target=read_output, daemon=True).start()
-        
-        # 监控进程状态
-        def monitor_process_status():
-            process.wait()
-            code = process.returncode
-            logger.info(f"Monitor script exited with code: {code}")
-            if code != 0:
-                logger.info("Restarting monitor script in 30 seconds...")
-                time.sleep(30)
-                run_monitor_script()
-        
-        threading.Thread(target=monitor_process_status, daemon=True).start()
+        logger.info("监控脚本已启动")
         
     except Exception as e:
-        logger.error(f"Error running monitor script: {e}")
+        logger.error(f"运行监控脚本时出错: {e}")
 
 def extract_domains():
     """提取隧道域名"""
@@ -585,12 +566,12 @@ def extract_domains():
     
     if ARGO_AUTH and ARGO_DOMAIN:
         argo_domain = ARGO_DOMAIN
-        logger.info(f'Using fixed domain: {argo_domain}')
+        logger.info(f'使用固定域名: {argo_domain}')
         generate_links(argo_domain)
     else:
         try:
             if not boot_log_path.exists():
-                logger.error("boot.log not found")
+                logger.error("boot.log 文件未找到")
                 return
             
             with open(boot_log_path, 'r', encoding='utf-8') as f:
@@ -601,24 +582,24 @@ def extract_domains():
             
             if domains:
                 argo_domain = domains[0]
-                logger.info(f'Found temporary domain: {argo_domain}')
+                logger.info(f'找到临时域名: {argo_domain}')
                 generate_links(argo_domain)
             else:
-                logger.info('Domain not found, restarting bot to get Argo domain')
+                logger.info('未找到域名，重新运行 bot 以获取 Argo 域名')
                 boot_log_path.unlink(missing_ok=True)
                 
-                # 停止现有的cloudflared进程
+                # 停止现有的 cloudflared 进程
                 kill_bot_process()
                 time.sleep(3)
                 
-                # 重新启动cloudflared
+                # 重新启动 cloudflared
                 cmd = f"nohup {bot_path} tunnel --edge-ip-version auto --no-autoupdate --protocol http2 --logfile {boot_log_path} --loglevel info --url http://localhost:{ARGO_PORT} >/dev/null 2>&1 &"
                 run_process(cmd, detach=True)
-                logger.info(f"{bot_name} restarted")
+                logger.info(f"{bot_name} 重新运行中")
                 time.sleep(3)
                 extract_domains()
         except Exception as e:
-            logger.error(f'Error reading boot.log: {e}')
+            logger.error(f'读取 boot.log 时出错: {e}')
 
 def kill_bot_process():
     """停止bot进程"""
@@ -632,23 +613,21 @@ def kill_bot_process():
     except Exception:
         pass  # 忽略错误
 
-async def get_meta_info():
+def get_meta_info():
     """获取ISP信息"""
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get('https://ipapi.co/json/', timeout=3) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    if data.get('country_code') and data.get('org'):
-                        return f"{data['country_code']}_{data['org']}"
+        response = requests.get('https://ipapi.co/json/', timeout=3)
+        if response.status_code == 200:
+            data = response.json()
+            if data.get('country_code') and data.get('org'):
+                return f"{data['country_code']}_{data['org']}"
     except Exception:
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get('http://ip-api.com/json/', timeout=3) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        if data.get('status') == 'success' and data.get('countryCode') and data.get('org'):
-                            return f"{data['countryCode']}_{data['org']}"
+            response = requests.get('http://ip-api.com/json/', timeout=3)
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('status') == 'success' and data.get('countryCode') and data.get('org'):
+                    return f"{data['countryCode']}_{data['org']}"
         except Exception:
             pass
     
@@ -659,13 +638,8 @@ def generate_links(domain):
     global sub_txt, argo_domain, sub_encoded
     argo_domain = domain
     
-    # 同步方式调用异步函数
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        ISP = loop.run_until_complete(get_meta_info())
-    finally:
-        loop.close()
+    # 获取ISP信息
+    ISP = get_meta_info()
     
     node_name = f"{NAME}-{ISP}" if NAME else ISP
     
@@ -699,14 +673,22 @@ def generate_links(domain):
     
     sub_txt = f"{vless_config}\n\n{vmess_config_url}\n\n{trojan_config}"
     
-    # 打印base64编码的订阅内容
+    # 生成base64编码的订阅内容
     sub_encoded = base64.b64encode(sub_txt.encode()).decode()
-    logger.info(f"Subscription content (base64): {sub_encoded}")
+    logger.info(f"订阅内容已生成")
+    logger.info(f"域名: {argo_domain}")
+    logger.info(f"节点名称: {node_name}")
+    
+    # 打印base64编码的订阅内容到控制台
+    print(f"\n{'='*60}")
+    print(f"订阅内容 (base64):")
+    print(f"{sub_encoded}")
+    print(f"{'='*60}\n")
     
     # 保存到文件
     with open(sub_path, 'w', encoding='utf-8') as f:
         f.write(sub_encoded)
-    logger.info(f"{sub_path} saved successfully")
+    logger.info(f"订阅已保存到 {sub_path}")
     
     # 上传节点
     upload_nodes()
@@ -728,13 +710,13 @@ def upload_nodes():
                 timeout=10
             )
             if response.status_code == 200:
-                logger.info('Subscription uploaded successfully')
+                logger.info('订阅上传成功')
                 return response
             else:
-                logger.error(f'Upload failed with status code: {response.status_code}')
+                logger.error(f'上传失败，状态码: {response.status_code}')
                 return None
         except Exception as e:
-            logger.error(f'Failed to upload subscription: {e}')
+            logger.error(f'订阅上传失败: {e}')
             return None
     elif UPLOAD_URL:
         if not list_path.exists():
@@ -759,13 +741,13 @@ def upload_nodes():
                 timeout=10
             )
             if response.status_code == 200:
-                logger.info('Nodes uploaded successfully')
+                logger.info('节点上传成功')
                 return response
             else:
-                logger.error(f'Upload failed with status code: {response.status_code}')
+                logger.error(f'上传失败，状态码: {response.status_code}')
                 return None
         except Exception as e:
-            logger.error(f'Failed to upload nodes: {e}')
+            logger.error(f'节点上传失败: {e}')
             return None
     else:
         return None
@@ -790,8 +772,8 @@ def clean_files():
             except Exception:
                 pass  # 忽略错误
         
-        logger.info('Application is running')
-        logger.info('Thank you for using this script, enjoy!')
+        logger.info('应用正在运行')
+        logger.info('感谢使用此脚本，享受吧！')
     
     # 在新线程中运行清理
     threading.Thread(target=cleanup, daemon=True).start()
@@ -799,7 +781,7 @@ def clean_files():
 def add_visit_task():
     """添加自动访问任务"""
     if not AUTO_ACCESS or not PROJECT_URL:
-        logger.info("Skipping auto-access task")
+        logger.info("跳过添加自动访问任务")
         return None
     
     try:
@@ -809,10 +791,10 @@ def add_visit_task():
             headers={'Content-Type': 'application/json'},
             timeout=10
         )
-        logger.info("Auto-access task added successfully")
+        logger.info("自动访问任务添加成功")
         return response
     except Exception as e:
-        logger.error(f"Failed to add auto-access task: {e}")
+        logger.error(f"添加自动访问任务失败: {e}")
         return None
 
 async def handle_index(request):
@@ -823,18 +805,31 @@ async def handle_index(request):
     return web.Response(text="Hello world!")
 
 async def handle_sub(request):
-    """处理订阅路由"""
+    """处理订阅路由 - 返回base64编码的内容"""
     global sub_encoded
     if not sub_encoded:
-        return web.Response(status=404, text="Subscription not ready")
+        return web.Response(status=404, text="订阅未就绪")
     
+    # 直接返回base64编码的内容，设置正确的Content-Type
     return web.Response(
         text=sub_encoded,
         content_type='text/plain; charset=utf-8'
     )
 
+async def handle_stats(request):
+    """处理统计信息"""
+    global connection_counter
+    
+    stats = {
+        "connections": connection_counter,
+        "timestamp": time.time(),
+        "status": "运行中"
+    }
+    
+    return web.json_response(stats)
+
 async def proxy_xray_websocket(request):
-    """代理WebSocket请求到Xray"""
+    """代理WebSocket请求到Xray - 高性能版本"""
     # 提取路径
     path = request.path
     query_string = request.query_string
@@ -842,22 +837,32 @@ async def proxy_xray_websocket(request):
     # 根据路径确定目标端口
     if path.startswith('/vless-argo'):
         target_port = 3003
+        connection_type = "vless-argo"
     elif path.startswith('/vmess-argo'):
         target_port = 3004
+        connection_type = "vmess-argo"
     elif path.startswith('/trojan-argo'):
         target_port = 3005
+        connection_type = "trojan-argo"
     elif path in ['/vless', '/vmess', '/trojan']:
         target_port = 3001
+        connection_type = path[1:]  # 移除开头的/
     else:
         # 未知路径，返回404
-        return web.Response(status=404, text="Path not found")
+        return web.Response(status=404, text="路径未找到")
+    
+    # 更新连接计数
+    connection_counter[connection_type] += 1
+    connection_counter["total"] += 1
+    
+    # 每100个连接打印一次统计
+    if connection_counter["total"] % 100 == 0:
+        logger.info(f"连接统计: VLESS={connection_counter['vless-argo']}, VMESS={connection_counter['vmess-argo']}, Trojan={connection_counter['trojan-argo']}, 总计={connection_counter['total']}")
     
     # 构建目标URL
     target_url = f"ws://localhost:{target_port}{path}"
     if query_string:
         target_url += f"?{query_string}"
-    
-    logger.info(f"Proxying WebSocket: {path} -> {target_url}")
     
     # 创建WebSocket响应
     ws = web.WebSocketResponse()
@@ -866,22 +871,30 @@ async def proxy_xray_websocket(request):
     try:
         # 连接到目标WebSocket服务器
         async with aiohttp.ClientSession() as session:
+            # 设置简化的headers
+            headers = {
+                'User-Agent': request.headers.get('User-Agent', ''),
+                'Origin': request.headers.get('Origin', ''),
+                'Sec-WebSocket-Protocol': request.headers.get('Sec-WebSocket-Protocol', ''),
+            }
+            
             async with session.ws_connect(
                 target_url,
-                headers=dict(request.headers)
+                headers=headers,
+                timeout=30
             ) as target_ws:
                 
-                # 双向转发数据
-                client_to_target = asyncio.create_task(
-                    forward_websocket_messages(ws, target_ws, "client->xray")
+                # 双向转发数据 - 使用简单的转发，不记录每条消息
+                client_to_target_task = asyncio.create_task(
+                    forward_websocket_silent(ws, target_ws)
                 )
-                target_to_client = asyncio.create_task(
-                    forward_websocket_messages(target_ws, ws, "xray->client")
+                target_to_client_task = asyncio.create_task(
+                    forward_websocket_silent(target_ws, ws)
                 )
                 
                 # 等待任意一个任务完成
                 done, pending = await asyncio.wait(
-                    [client_to_target, target_to_client],
+                    [client_to_target_task, target_to_client_task],
                     return_when=asyncio.FIRST_COMPLETED
                 )
                 
@@ -897,12 +910,17 @@ async def proxy_xray_websocket(request):
                         pass
                         
     except Exception as e:
-        logger.error(f"Error in WebSocket proxy: {e}")
+        # 减少错误日志输出
+        pass
+    
+    # 连接关闭
+    connection_counter[connection_type] -= 1
+    connection_counter["total"] -= 1
     
     return ws
 
-async def forward_websocket_messages(source, target, label):
-    """转发WebSocket消息"""
+async def forward_websocket_silent(source, target):
+    """静默转发WebSocket消息 - 不记录日志"""
     try:
         async for msg in source:
             if msg.type == aiohttp.WSMsgType.TEXT:
@@ -917,13 +935,12 @@ async def forward_websocket_messages(source, target, label):
                 await target.close()
                 break
             elif msg.type == aiohttp.WSMsgType.ERROR:
-                logger.error(f"WebSocket error in {label}: {source.exception()}")
                 break
-    except Exception as e:
-        logger.error(f"Error forwarding WebSocket messages in {label}: {e}")
+    except Exception:
+        pass  # 忽略所有错误
 
 async def proxy_xray_http(request):
-    """代理HTTP请求到Xray"""
+    """代理HTTP请求到Xray - 静默版本"""
     # 提取路径和查询参数
     path = request.path
     query_string = request.query_string
@@ -935,14 +952,12 @@ async def proxy_xray_http(request):
         target_port = 3001  # Xray会处理fallback到对应端口
     else:
         # 不是Xray路径，返回404
-        return web.Response(status=404, text="Path not found")
+        return web.Response(status=404, text="路径未找到")
     
     # 构建目标URL
     target_url = f"http://localhost:{target_port}{path}"
     if query_string:
         target_url += f"?{query_string}"
-    
-    logger.info(f"Proxying HTTP: {path} -> {target_url}")
     
     # 转发请求
     try:
@@ -961,7 +976,7 @@ async def proxy_xray_http(request):
             body = None
         
         # 发送请求到目标服务器
-        timeout = aiohttp.ClientTimeout(total=30)
+        timeout = aiohttp.ClientTimeout(total=10)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.request(
                 method=method,
@@ -982,25 +997,7 @@ async def proxy_xray_http(request):
                 )
                 
     except Exception as e:
-        logger.error(f"Error proxying HTTP request to Xray: {e}")
-        return web.Response(status=502, text="Bad Gateway")
-
-async def handle_other_http(request):
-    """处理其他HTTP请求"""
-    # 这些请求应该由Xray处理（通过fallback）
-    # 但实际上这些路径应该已经被上面的代理处理了
-    # 这里作为备用处理
-    path = request.path
-    logger.info(f"Handling other HTTP request: {path}")
-    
-    # 检查是否是Xray相关的路径
-    xray_paths = ['/vless', '/vmess', '/trojan', '/vless-argo', '/vmess-argo', '/trojan-argo']
-    if any(path.startswith(xray_path) for xray_path in xray_paths):
-        # 代理到Xray
-        return await proxy_xray_http(request)
-    
-    # 否则返回404
-    return web.Response(status=404, text="Not Found")
+        return web.Response(status=502, text="网关错误")
 
 async def handle_health_check(request):
     """健康检查"""
@@ -1008,7 +1005,7 @@ async def handle_health_check(request):
 
 def start_server():
     """启动服务器"""
-    logger.info('Starting server initialization...')
+    logger.info('开始服务器初始化...')
     
     delete_nodes()
     cleanup_old_files()
@@ -1018,25 +1015,25 @@ def start_server():
     download_files_and_run()
     
     # 等待隧道启动
-    logger.info('Waiting for tunnel startup...')
+    logger.info('等待隧道启动...')
     time.sleep(5)
     
     extract_domains()
     add_visit_task()
     
-    logger.info('Server initialization complete')
+    logger.info('服务器初始化完成')
 
 def signal_handler(signum, frame):
     """信号处理"""
-    logger.info("Received shutdown signal, cleaning up...")
+    logger.info("收到关闭信号，正在清理...")
     
     if monitor_process and monitor_process.poll() is None:
-        logger.info("Stopping monitor script...")
+        logger.info("停止监控脚本...")
         monitor_process.terminate()
     
     process_manager.cleanup()
     
-    logger.info("Program exited")
+    logger.info("程序退出")
     sys.exit(0)
 
 async def init_app():
@@ -1046,10 +1043,13 @@ async def init_app():
     # 健康检查
     app.router.add_get('/health', handle_health_check)
     
+    # 统计信息
+    app.router.add_get('/stats', handle_stats)
+    
     # 首页
     app.router.add_get('/', handle_index)
     
-    # 订阅
+    # 订阅 - 重要：确保路径正确
     app.router.add_get(f'/{SUB_PATH}', handle_sub)
     
     # WebSocket路由 - Xray流量
@@ -1066,7 +1066,7 @@ async def init_app():
         app.router.add_get(path, proxy_xray_websocket)
     
     # 其他HTTP请求
-    app.router.add_route('*', '/{path:.*}', handle_other_http)
+    app.router.add_route('*', '/{path:.*}', proxy_xray_http)
     
     return app
 
@@ -1082,9 +1082,8 @@ async def start_aiohttp_server():
     site = web.TCPSite(runner, '0.0.0.0', ARGO_PORT)
     await site.start()
     
-    logger.info(f"aiohttp server running on port {ARGO_PORT}")
-    logger.info(f"Subscription available at: http://localhost:{ARGO_PORT}/{SUB_PATH}")
-    logger.info(f"Xray WebSocket paths available at: http://localhost:{ARGO_PORT}/vless-argo, /vmess-argo, /trojan-argo")
+    logger.info(f"服务器运行在端口 {ARGO_PORT}")
+    logger.info(f"订阅地址: http://localhost:{ARGO_PORT}/{SUB_PATH}")
     
     return runner
 
@@ -1121,26 +1120,28 @@ def main():
         runner = loop.run_until_complete(start_aiohttp_server())
         
         # 运行服务器
-        logger.info("Server started successfully")
+        logger.info("服务器启动成功")
         print(f"\n{'='*60}")
-        print(f"Server is running!")
-        print(f"Subscription URL: http://localhost:{ARGO_PORT}/{SUB_PATH}")
-        print(f"WebSocket paths available:")
+        print(f"服务器运行在端口 {ARGO_PORT}")
+        print(f"订阅地址: http://localhost:{ARGO_PORT}/{SUB_PATH}")
+        print(f"WebSocket 路径:")
         print(f"  - /vless-argo")
         print(f"  - /vmess-argo")
         print(f"  - /trojan-argo")
+        print(f"统计信息: http://localhost:{ARGO_PORT}/stats")
+        print(f"健康检查: http://localhost:{ARGO_PORT}/health")
         print(f"{'='*60}\n")
         
         try:
             loop.run_forever()
         except KeyboardInterrupt:
-            logger.info("Server stopped by user")
+            logger.info("用户停止服务器")
         finally:
             loop.run_until_complete(runner.cleanup())
             loop.close()
             
     except Exception as e:
-        logger.error(f"Error starting aiohttp server: {e}")
+        logger.error(f"启动服务器时出错: {e}")
         import traceback
         traceback.print_exc()
 
@@ -1149,7 +1150,7 @@ if __name__ == '__main__':
     try:
         import requests
     except ImportError:
-        logger.error("Please install requests library: pip install requests")
+        logger.error("请安装 requests 库: pip install requests")
         sys.exit(1)
     
     main()

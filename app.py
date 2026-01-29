@@ -58,6 +58,7 @@ processes = []
 sub_txt = ""
 argo_domain = ""
 sub_encoded = ""
+app_started = False
 
 # 用于统计连接
 connection_counter = {
@@ -99,15 +100,13 @@ bot_name = generate_random_name()
 php_name = generate_random_name()
 monitor_name = 'cf-vps-monitor.sh'
 
-# 文件路径 - 临时文件放在FILE_PATH中
+# 文件路径
 npm_path = file_path / npm_name
 php_path = file_path / php_name
 web_path = file_path / web_name
 bot_path = file_path / bot_name
 monitor_path = file_path / monitor_name
-
-# 订阅文件放在主目录下
-sub_path = Path('sub.txt')  # 主目录下的sub.txt
+sub_path = file_path / 'sub.txt'
 list_path = file_path / 'list.txt'
 boot_log_path = file_path / 'boot.log'
 config_path = file_path / 'config.json'
@@ -146,7 +145,7 @@ def delete_nodes():
         logger.error(f"删除节点函数出错: {e}")
 
 def cleanup_old_files():
-    """清理历史文件 - 只清理临时文件夹，不清理主目录的sub.txt"""
+    """清理历史文件"""
     try:
         for file in file_path.iterdir():
             try:
@@ -615,23 +614,21 @@ def kill_bot_process():
     except Exception:
         pass  # 忽略错误
 
-async def get_meta_info():
-    """获取ISP信息"""
+def get_meta_info_sync():
+    """获取ISP信息（同步版本）"""
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get('https://ipapi.co/json/', timeout=3) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    if data.get('country_code') and data.get('org'):
-                        return f"{data['country_code']}_{data['org']}"
+        response = requests.get('https://ipapi.co/json/', timeout=3)
+        if response.status_code == 200:
+            data = response.json()
+            if data.get('country_code') and data.get('org'):
+                return f"{data['country_code']}_{data['org']}"
     except Exception:
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get('http://ip-api.com/json/', timeout=3) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        if data.get('status') == 'success' and data.get('countryCode') and data.get('org'):
-                            return f"{data['countryCode']}_{data['org']}"
+            response = requests.get('http://ip-api.com/json/', timeout=3)
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('status') == 'success' and data.get('countryCode') and data.get('org'):
+                    return f"{data['countryCode']}_{data['org']}"
         except Exception:
             pass
     
@@ -640,15 +637,11 @@ async def get_meta_info():
 def generate_links(domain):
     """生成订阅链接"""
     global sub_txt, argo_domain, sub_encoded
+    
     argo_domain = domain
     
-    # 同步方式调用异步函数
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        ISP = loop.run_until_complete(get_meta_info())
-    finally:
-        loop.close()
+    # 使用同步函数获取ISP信息
+    ISP = get_meta_info_sync()
     
     node_name = f"{NAME}-{ISP}" if NAME else ISP
     
@@ -690,10 +683,10 @@ def generate_links(domain):
     print(sub_encoded)
     print("\n" + "="*60)
     
-    # 保存到主目录下的sub.txt文件
+    # 保存到文件
     with open(sub_path, 'w', encoding='utf-8') as f:
         f.write(sub_encoded)
-    logger.info(f"订阅已保存到 {sub_path.absolute()}")
+    logger.info(f"订阅已保存到 {sub_path}")
     logger.info(f"节点域名: {argo_domain}")
     logger.info(f"节点名称: {node_name}")
     
@@ -760,7 +753,7 @@ def upload_nodes():
         return None
 
 def clean_files():
-    """清理文件 - 只清理临时文件，不清理主目录的sub.txt"""
+    """清理文件"""
     def cleanup():
         time.sleep(90)  # 90秒后清理
         
@@ -771,7 +764,7 @@ def clean_files():
         elif NEZHA_SERVER and NEZHA_KEY:
             files_to_delete.append(php_path)
         
-        # 删除临时文件夹中的文件，但不删除主目录的sub.txt
+        # 删除文件
         for file in files_to_delete:
             try:
                 if file.exists():
@@ -781,7 +774,6 @@ def clean_files():
         
         logger.info('应用正在运行')
         logger.info('感谢使用此脚本，享受吧！')
-        logger.info(f'订阅文件保存在: {sub_path.absolute()}')
     
     # 在新线程中运行清理
     threading.Thread(target=cleanup, daemon=True).start()
@@ -815,35 +807,42 @@ async def handle_index(request):
 async def handle_sub(request):
     """处理订阅路由"""
     global sub_encoded
-    if not sub_encoded:
-        # 如果内存中没有订阅内容，尝试从主目录的sub.txt文件读取
-        try:
-            if sub_path.exists():
-                with open(sub_path, 'r', encoding='utf-8') as f:
-                    sub_encoded = f.read()
-                    logger.info(f"从文件 {sub_path} 读取订阅内容")
-            else:
-                logger.error("订阅内容未准备好，且文件不存在")
-                return web.Response(status=404, text="Subscription not ready")
-        except Exception as e:
-            logger.error(f"读取订阅文件失败: {e}")
-            return web.Response(status=404, text="Subscription not ready")
-    
     try:
+        if not sub_encoded:
+            # 如果没有订阅内容，尝试从文件读取
+            try:
+                if sub_path.exists():
+                    with open(sub_path, 'r', encoding='utf-8') as f:
+                        sub_encoded = f.read()
+                        logger.info(f"从文件读取订阅内容，长度: {len(sub_encoded)}")
+                else:
+                    logger.warning("订阅文件不存在")
+                    return web.Response(status=503, text="Subscription not ready yet. Please wait a moment and try again.")
+            except Exception as e:
+                logger.error(f"读取订阅文件失败: {e}")
+                return web.Response(status=503, text="Subscription not ready yet. Please wait a moment and try again.")
+        
         # 验证sub_encoded是否为有效的base64
-        test = base64.b64decode(sub_encoded)
-        logger.info(f"返回订阅内容，长度: {len(sub_encoded)}")
-        return web.Response(
-            text=sub_encoded,
-            content_type='text/plain; charset=utf-8'
-        )
+        try:
+            test = base64.b64decode(sub_encoded)
+            logger.info(f"返回订阅内容，长度: {len(sub_encoded)}")
+            return web.Response(
+                text=sub_encoded,
+                content_type='text/plain; charset=utf-8'
+            )
+        except Exception as e:
+            logger.error(f"订阅内容base64解码失败: {e}")
+            # 如果base64解码失败，返回原始文本作为备份
+            if sub_txt:
+                return web.Response(
+                    text=sub_txt,
+                    content_type='text/plain; charset=utf-8'
+                )
+            else:
+                return web.Response(status=503, text="Subscription not ready yet. Please wait a moment and try again.")
     except Exception as e:
-        logger.error(f"订阅内容base64解码失败: {e}")
-        # 如果base64解码失败，返回原始文本作为备份
-        return web.Response(
-            text=sub_txt if sub_txt else "No subscription available",
-            content_type='text/plain; charset=utf-8'
-        )
+        logger.error(f"处理订阅请求时出错: {e}")
+        return web.Response(status=500, text=f"Internal Server Error: {str(e)}")
 
 async def handle_stats(request):
     """处理统计信息"""
@@ -1034,6 +1033,7 @@ async def handle_health_check(request):
 
 def start_server():
     """启动服务器"""
+    global app_started
     logger.info('开始服务器初始化...')
     
     delete_nodes()
@@ -1050,6 +1050,7 @@ def start_server():
     extract_domains()
     add_visit_task()
     
+    app_started = True
     logger.info('服务器初始化完成')
 
 def signal_handler(signum, frame):
@@ -1097,6 +1098,21 @@ async def init_app():
     # 其他HTTP请求
     app.router.add_route('*', '/{path:.*}', proxy_xray_http)
     
+    # 添加中间件来处理未捕获的异常
+    @web.middleware
+    async def error_middleware(request, handler):
+        try:
+            response = await handler(request)
+            return response
+        except web.HTTPException as ex:
+            # 如果是HTTP异常，直接返回
+            raise
+        except Exception as e:
+            logger.error(f"处理请求时未捕获的异常: {e}")
+            return web.Response(status=500, text=f"Internal Server Error: {str(e)}")
+    
+    app.middlewares.append(error_middleware)
+    
     return app
 
 async def start_aiohttp_server():
@@ -1113,7 +1129,6 @@ async def start_aiohttp_server():
     
     logger.info(f"服务器运行在端口 {ARGO_PORT}")
     logger.info(f"订阅地址: http://localhost:{ARGO_PORT}/{SUB_PATH}")
-    logger.info(f"订阅文件保存在: {sub_path.absolute()}")
     
     return runner
 
@@ -1154,7 +1169,6 @@ def main():
         print(f"\n{'='*60}")
         print(f"服务器运行在端口 {ARGO_PORT}")
         print(f"订阅地址: http://localhost:{ARGO_PORT}/{SUB_PATH}")
-        print(f"订阅文件位置: {sub_path.absolute()}")
         print(f"WebSocket路径: /vless-argo, /vmess-argo, /trojan-argo")
         print(f"状态统计: http://localhost:{ARGO_PORT}/stats")
         print(f"健康检查: http://localhost:{ARGO_PORT}/health")

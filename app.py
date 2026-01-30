@@ -18,23 +18,13 @@ import yaml
 import uuid as uuid_module
 import requests
 
-# 设置日志 - 中文，只记录错误和重要信息
+# 设置日志 - 中文
 logging.basicConfig(
-    level=logging.WARNING,  # 改为WARNING级别，减少INFO日志
+    level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
-# 创建自己的logger，用于重要信息
-logger = logging.getLogger('myapp')
-logger.setLevel(logging.INFO)
-
-# 禁用aiohttp的访问日志
-aiohttp_logger = logging.getLogger('aiohttp.access')
-aiohttp_logger.setLevel(logging.WARNING)
-aiohttp_logger = logging.getLogger('aiohttp.web')
-aiohttp_logger.setLevel(logging.WARNING)
-aiohttp_logger = logging.getLogger('aiohttp.server')
-aiohttp_logger.setLevel(logging.WARNING)
+logger = logging.getLogger(__name__)
 
 # 环境变量配置
 UPLOAD_URL = os.getenv('UPLOAD_URL', '')
@@ -625,78 +615,49 @@ def kill_bot_process():
         pass  # 忽略错误
 
 def get_meta_info_sync():
-    """获取ISP信息（同步版本）- 修复版本"""
-    api_list = [
-        'https://ipinfo.io/json',
-        'http://ip-api.com/json/',
-        'https://api.ip.sb/geoip',
-        'https://ipapi.co/json/'
+    """获取ISP信息（同步版本）- 改进版"""
+    # 尝试多个IP信息API
+    api_endpoints = [
+        ('https://ipinfo.io/json', lambda data: f"{data.get('country', 'XX')}_{data.get('org', 'Unknown').split()[0] if data.get('org') else 'Unknown'}"),
+        ('https://ipapi.co/json/', lambda data: f"{data.get('country_code', 'XX')}_{data.get('org', 'Unknown').split()[0] if data.get('org') else 'Unknown'}"),
+        ('http://ip-api.com/json/', lambda data: f"{data.get('countryCode', 'XX')}_{data.get('org', 'Unknown').split()[0] if data.get('org') else 'Unknown'}" if data.get('status') == 'success' else None),
+        ('https://api.ip.sb/geoip', lambda data: f"{data.get('country_code', 'XX')}_{data.get('organization', 'Unknown').split()[0] if data.get('organization') else 'Unknown'}"),
+        ('https://api.myip.com', lambda data: f"{data.get('cc', 'XX')}_Unknown"),
     ]
     
-    for api_url in api_list:
+    for url, parser in api_endpoints:
         try:
-            response = requests.get(api_url, timeout=5)
+            # 设置合理的超时和头部
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'application/json'
+            }
+            
+            response = requests.get(url, headers=headers, timeout=5)
             if response.status_code == 200:
                 data = response.json()
-                
-                # 不同API返回的数据格式不同，尝试解析
-                if 'ipinfo.io' in api_url:
-                    country = data.get('country', '')
-                    org = data.get('org', '')
-                    if country and org:
-                        # 从org中提取ISP名称
-                        isp = org.split()[-1] if ' ' in org else org
-                        return f"{country}_{isp}"
-                elif 'ip-api.com' in api_url:
-                    if data.get('status') == 'success':
-                        country = data.get('countryCode', '')
-                        org = data.get('org', '') or data.get('isp', '')
-                        if country and org:
-                            return f"{country}_{org}"
-                elif 'ip.sb' in api_url:
-                    country = data.get('country_code', '')
-                    org = data.get('organization', '') or data.get('isp', '')
-                    if country and org:
-                        return f"{country}_{org}"
-                elif 'ipapi.co' in api_url:
-                    country = data.get('country_code', '')
-                    org = data.get('org', '')
-                    if country and org:
-                        return f"{country}_{org}"
-        except Exception:
-            continue  # 尝试下一个API
+                result = parser(data)
+                if result and 'Unknown' not in result:
+                    logger.info(f"成功从 {url} 获取ISP信息: {result}")
+                    return result
+        except Exception as e:
+            logger.debug(f"从 {url} 获取ISP信息失败: {e}")
+            continue
     
-    # 如果所有API都失败，尝试使用公共DNS查询
+    # 如果所有API都失败，尝试获取公共IP地址
     try:
-        # 获取公网IP
-        ip_response = requests.get('https://api.ipify.org', timeout=3)
-        if ip_response.status_code == 200:
-            ip = ip_response.text.strip()
+        response = requests.get('https://api.ipify.org?format=json', timeout=3)
+        if response.status_code == 200:
+            ip_data = response.json()
+            ip = ip_data.get('ip', '')
             if ip:
-                # 使用ip-api.com查询IP信息
-                geo_response = requests.get(f'http://ip-api.com/json/{ip}', timeout=3)
-                if geo_response.status_code == 200:
-                    geo_data = geo_response.json()
-                    if geo_data.get('status') == 'success':
-                        country = geo_data.get('countryCode', '')
-                        org = geo_data.get('org', '') or geo_data.get('isp', '')
-                        if country and org:
-                            return f"{country}_{org}"
+                # 使用IP地址作为标识
+                return f"IP_{ip[:8]}"
     except Exception:
         pass
     
-    # 最后尝试获取主机名
-    try:
-        import socket
-        hostname = socket.gethostname()
-        if hostname and hostname != 'localhost':
-            # 从主机名尝试推断位置（简单方法）
-            # 这里可以根据实际情况调整
-            return f"LOCAL_{hostname}"
-    except Exception:
-        pass
-    
-    return 'UNKNOWN'
+    logger.warning("所有ISP信息API都失败，使用默认值")
+    return 'Unknown'
 
 def generate_links(domain):
     """生成订阅链接"""
@@ -706,8 +667,12 @@ def generate_links(domain):
     
     # 使用同步函数获取ISP信息
     ISP = get_meta_info_sync()
+    logger.info(f"获取到ISP信息: {ISP}")
     
-    node_name = f"{NAME}-{ISP}" if NAME else ISP
+    # 清理ISP信息中的特殊字符
+    ISP_clean = ISP.replace(' ', '_').replace('/', '_').replace('\\', '_').replace(':', '_')
+    
+    node_name = f"{NAME}-{ISP_clean}" if NAME else ISP_clean
     
     # 生成VMESS配置
     vmess_config = {
@@ -753,7 +718,6 @@ def generate_links(domain):
     logger.info(f"订阅已保存到 {sub_path}")
     logger.info(f"节点域名: {argo_domain}")
     logger.info(f"节点名称: {node_name}")
-    logger.info(f"ISP信息: {ISP}")
     
     # 上传节点
     upload_nodes()
@@ -891,7 +855,6 @@ async def handle_sub(request):
         try:
             test = base64.b64decode(sub_encoded)
             logger.info(f"返回订阅内容，长度: {len(sub_encoded)}")
-            # 修复: 不要将charset包含在content_type参数中
             return web.Response(
                 text=sub_encoded,
                 content_type='text/plain'
@@ -923,7 +886,7 @@ async def handle_stats(request):
     return web.json_response(stats)
 
 async def proxy_xray_websocket(request):
-    """代理WebSocket请求到Xray - 高性能版本"""
+    """代理WebSocket请求到Xray - 修复协议警告"""
     # 提取路径
     path = request.path
     query_string = request.query_string
@@ -965,12 +928,15 @@ async def proxy_xray_websocket(request):
     try:
         # 连接到目标WebSocket服务器
         async with aiohttp.ClientSession() as session:
-            # 设置简化的headers
+            # 设置headers，但不包括Sec-WebSocket-Protocol，让服务器处理
             headers = {
                 'User-Agent': request.headers.get('User-Agent', ''),
                 'Origin': request.headers.get('Origin', ''),
-                'Sec-WebSocket-Protocol': request.headers.get('Sec-WebSocket-Protocol', ''),
             }
+            
+            # 不传递Sec-WebSocket-Protocol头部，避免协议不匹配警告
+            # 如果客户端发送了Sec-WebSocket-Protocol，我们忽略它
+            # 这样可以避免"don't overlap server-known ones"警告
             
             async with session.ws_connect(
                 target_url,
@@ -1005,7 +971,7 @@ async def proxy_xray_websocket(request):
                         
     except Exception as e:
         # 减少错误日志输出
-        pass
+        logger.debug(f"WebSocket连接错误: {e}")
     
     # 连接关闭
     connection_counter[connection_type] -= 1
@@ -1134,7 +1100,6 @@ def signal_handler(signum, frame):
 
 async def init_app():
     """初始化aiohttp应用"""
-    # 创建应用时不启用访问日志
     app = web.Application()
     
     # 健康检查

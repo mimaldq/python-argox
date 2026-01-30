@@ -18,13 +18,23 @@ import yaml
 import uuid as uuid_module
 import requests
 
-# 设置日志 - 中文
+# 设置日志 - 中文，只记录错误和重要信息
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING,  # 改为WARNING级别，减少INFO日志
     format='%(asctime)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
-logger = logging.getLogger(__name__)
+# 创建自己的logger，用于重要信息
+logger = logging.getLogger('myapp')
+logger.setLevel(logging.INFO)
+
+# 禁用aiohttp的访问日志
+aiohttp_logger = logging.getLogger('aiohttp.access')
+aiohttp_logger.setLevel(logging.WARNING)
+aiohttp_logger = logging.getLogger('aiohttp.web')
+aiohttp_logger.setLevel(logging.WARNING)
+aiohttp_logger = logging.getLogger('aiohttp.server')
+aiohttp_logger.setLevel(logging.WARNING)
 
 # 环境变量配置
 UPLOAD_URL = os.getenv('UPLOAD_URL', '')
@@ -162,7 +172,7 @@ def generate_config():
         "log": {
             "access": "/dev/null",
             "error": "/dev/null",
-            "loglevel": "error"  # 设置为error级别，减少日志
+            "loglevel": "none"
         },
         "dns": {
             "servers": [
@@ -438,8 +448,8 @@ uuid: {UUID}"""
     else:
         logger.info("哪吒监控变量为空，跳过运行")
     
-    # 运行Xray - 重定向所有输出到/dev/null
-    cmd = f"{web_path} -c {config_path} > /dev/null 2>&1"
+    # 运行Xray
+    cmd = f"{web_path} -c {config_path}"
     run_process(cmd, detach=True)
     logger.info(f"{web_name} 运行中")
     time.sleep(1)
@@ -460,11 +470,11 @@ uuid: {UUID}"""
         else:
             args.extend([
                 "--logfile", str(boot_log_path),
-                "--loglevel", "warn",  # 设置为warn级别，减少日志
+                "--loglevel", "info",
                 "--url", f"http://localhost:{ARGO_PORT}"
             ])
         
-        cmd = f"{bot_path} {' '.join(args)} > /dev/null 2>&1"
+        cmd = f"{bot_path} {' '.join(args)}"
         run_process(cmd, detach=True)
         logger.info(f"{bot_name} 运行中")
         time.sleep(5)
@@ -594,7 +604,7 @@ def extract_domains():
                 time.sleep(3)
                 
                 # 重新启动cloudflared
-                cmd = f"nohup {bot_path} tunnel --edge-ip-version auto --no-autoupdate --protocol http2 --logfile {boot_log_path} --loglevel warn --url http://localhost:{ARGO_PORT} >/dev/null 2>&1 &"
+                cmd = f"nohup {bot_path} tunnel --edge-ip-version auto --no-autoupdate --protocol http2 --logfile {boot_log_path} --loglevel info --url http://localhost:{ARGO_PORT} >/dev/null 2>&1 &"
                 run_process(cmd, detach=True)
                 logger.info(f"{bot_name} 重新运行中")
                 time.sleep(3)
@@ -615,52 +625,78 @@ def kill_bot_process():
         pass  # 忽略错误
 
 def get_meta_info_sync():
-    """获取ISP信息（同步版本）- 改进版本"""
-    # 尝试多个API，增加超时时间
-    apis = [
-        ('https://ipapi.co/json/', lambda data: f"{data.get('country_code', '')}_{data.get('org', '')}" if data.get('country_code') and data.get('org') else None),
-        ('http://ip-api.com/json/', lambda data: f"{data.get('countryCode', '')}_{data.get('org', '')}" if data.get('status') == 'success' and data.get('countryCode') and data.get('org') else None),
-        ('https://api.ip.sb/geoip', lambda data: f"{data.get('country_code', '')}_{data.get('organization', '')}" if data.get('country_code') and data.get('organization') else None),
+    """获取ISP信息（同步版本）- 修复版本"""
+    api_list = [
+        'https://ipinfo.io/json',
+        'http://ip-api.com/json/',
+        'https://api.ip.sb/geoip',
+        'https://ipapi.co/json/'
     ]
     
-    for api_url, processor in apis:
+    for api_url in api_list:
         try:
             response = requests.get(api_url, timeout=5)
             if response.status_code == 200:
                 data = response.json()
-                result = processor(data)
-                if result and result != '_':
-                    logger.info(f"从 {api_url} 获取ISP信息成功: {result}")
-                    return result
-        except Exception as e:
-            logger.debug(f"从 {api_url} 获取ISP信息失败: {e}")
-            continue
-    
-    # 如果所有API都失败，尝试获取公网IP
-    try:
-        response = requests.get('https://api.ipify.org?format=json', timeout=3)
-        if response.status_code == 200:
-            ip_data = response.json()
-            ip = ip_data.get('ip', '')
-            if ip:
-                # 尝试从IP推断国家代码
-                try:
-                    response2 = requests.get(f'https://ipapi.co/{ip}/json/', timeout=3)
-                    if response2.status_code == 200:
-                        data = response2.json()
-                        country = data.get('country_code', '')
-                        org = data.get('org', '')
+                
+                # 不同API返回的数据格式不同，尝试解析
+                if 'ipinfo.io' in api_url:
+                    country = data.get('country', '')
+                    org = data.get('org', '')
+                    if country and org:
+                        # 从org中提取ISP名称
+                        isp = org.split()[-1] if ' ' in org else org
+                        return f"{country}_{isp}"
+                elif 'ip-api.com' in api_url:
+                    if data.get('status') == 'success':
+                        country = data.get('countryCode', '')
+                        org = data.get('org', '') or data.get('isp', '')
                         if country and org:
                             return f"{country}_{org}"
-                        elif country:
-                            return f"{country}_Unknown"
-                except:
-                    pass
-                return f"IP_{ip}"
-    except:
+                elif 'ip.sb' in api_url:
+                    country = data.get('country_code', '')
+                    org = data.get('organization', '') or data.get('isp', '')
+                    if country and org:
+                        return f"{country}_{org}"
+                elif 'ipapi.co' in api_url:
+                    country = data.get('country_code', '')
+                    org = data.get('org', '')
+                    if country and org:
+                        return f"{country}_{org}"
+        except Exception:
+            continue  # 尝试下一个API
+    
+    # 如果所有API都失败，尝试使用公共DNS查询
+    try:
+        # 获取公网IP
+        ip_response = requests.get('https://api.ipify.org', timeout=3)
+        if ip_response.status_code == 200:
+            ip = ip_response.text.strip()
+            if ip:
+                # 使用ip-api.com查询IP信息
+                geo_response = requests.get(f'http://ip-api.com/json/{ip}', timeout=3)
+                if geo_response.status_code == 200:
+                    geo_data = geo_response.json()
+                    if geo_data.get('status') == 'success':
+                        country = geo_data.get('countryCode', '')
+                        org = geo_data.get('org', '') or geo_data.get('isp', '')
+                        if country and org:
+                            return f"{country}_{org}"
+    except Exception:
         pass
     
-    return 'Unknown'
+    # 最后尝试获取主机名
+    try:
+        import socket
+        hostname = socket.gethostname()
+        if hostname and hostname != 'localhost':
+            # 从主机名尝试推断位置（简单方法）
+            # 这里可以根据实际情况调整
+            return f"LOCAL_{hostname}"
+    except Exception:
+        pass
+    
+    return 'UNKNOWN'
 
 def generate_links(domain):
     """生成订阅链接"""
@@ -717,6 +753,7 @@ def generate_links(domain):
     logger.info(f"订阅已保存到 {sub_path}")
     logger.info(f"节点域名: {argo_domain}")
     logger.info(f"节点名称: {node_name}")
+    logger.info(f"ISP信息: {ISP}")
     
     # 上传节点
     upload_nodes()
@@ -853,6 +890,8 @@ async def handle_sub(request):
         # 验证sub_encoded是否为有效的base64
         try:
             test = base64.b64decode(sub_encoded)
+            logger.info(f"返回订阅内容，长度: {len(sub_encoded)}")
+            # 修复: 不要将charset包含在content_type参数中
             return web.Response(
                 text=sub_encoded,
                 content_type='text/plain'
@@ -1095,6 +1134,7 @@ def signal_handler(signum, frame):
 
 async def init_app():
     """初始化aiohttp应用"""
+    # 创建应用时不启用访问日志
     app = web.Application()
     
     # 健康检查

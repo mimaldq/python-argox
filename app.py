@@ -615,52 +615,50 @@ def kill_bot_process():
         pass  # 忽略错误
 
 def get_meta_info_sync():
-    """获取ISP信息（同步版本）- 改进版"""
-    # 尝试多个IP信息API
-    api_endpoints = [
-        ('https://ipinfo.io/json', lambda data: f"{data.get('country', 'XX')}_{data.get('org', 'Unknown').split()[0] if data.get('org') else 'Unknown'}"),
-        ('https://ipapi.co/json/', lambda data: f"{data.get('country_code', 'XX')}_{data.get('org', 'Unknown').split()[0] if data.get('org') else 'Unknown'}"),
-        ('http://ip-api.com/json/', lambda data: f"{data.get('countryCode', 'XX')}_{data.get('org', 'Unknown').split()[0] if data.get('org') else 'Unknown'}" if data.get('status') == 'success' else None),
-        ('https://api.ip.sb/geoip', lambda data: f"{data.get('country_code', 'XX')}_{data.get('organization', 'Unknown').split()[0] if data.get('organization') else 'Unknown'}"),
-        ('https://api.myip.com', lambda data: f"{data.get('cc', 'XX')}_Unknown"),
-    ]
-    
-    for url, parser in api_endpoints:
-        try:
-            # 设置合理的超时和头部
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Accept': 'application/json'
-            }
-            
-            response = requests.get(url, headers=headers, timeout=5)
-            if response.status_code == 200:
-                data = response.json()
-                result = parser(data)
-                if result and 'Unknown' not in result:
-                    logger.info(f"成功从 {url} 获取ISP信息: {result}")
-                    return result
-        except Exception as e:
-            logger.debug(f"从 {url} 获取ISP信息失败: {e}")
-            continue
-    
-    # 如果所有API都失败，尝试获取公共IP地址
+    """获取ISP信息（同步版本）- 根据Node.js代码修复"""
     try:
-        response = requests.get('https://api.ipify.org?format=json', timeout=3)
-        if response.status_code == 200:
-            ip_data = response.json()
-            ip = ip_data.get('ip', '')
-            if ip:
-                # 使用IP地址作为标识
-                return f"IP_{ip[:8]}"
+        # 尝试第一个API: ipapi.co
+        response1 = requests.get('https://ipapi.co/json/', timeout=5)
+        if response1.status_code == 200:
+            data1 = response1.json()
+            country_code = data1.get('country_code')
+            org = data1.get('org')
+            if country_code and org:
+                # 清理org名称，移除特殊字符
+                org_clean = org.replace(' ', '_').replace('.', '_').replace(',', '_')
+                return f"{country_code}_{org_clean}"
+    except Exception as e:
+        logger.debug(f"ipapi.co请求失败: {e}")
+        pass
+    
+    try:
+        # 尝试第二个API: ip-api.com
+        response2 = requests.get('http://ip-api.com/json/', timeout=5)
+        if response2.status_code == 200:
+            data2 = response2.json()
+            if data2.get('status') == 'success':
+                country_code = data2.get('countryCode')
+                org = data2.get('org')
+                if country_code and org:
+                    # 清理org名称，移除特殊字符
+                    org_clean = org.replace(' ', '_').replace('.', '_').replace(',', '_')
+                    return f"{country_code}_{org_clean}"
+    except Exception as e:
+        logger.debug(f"ip-api.com请求失败: {e}")
+        pass
+    
+    # 如果两个API都失败了，尝试获取主机名作为备用方案
+    try:
+        import socket
+        hostname = socket.gethostname()
+        return f"Host_{hostname}"
     except Exception:
         pass
     
-    logger.warning("所有ISP信息API都失败，使用默认值")
     return 'Unknown'
 
 def generate_links(domain):
-    """生成订阅链接"""
+    """生成订阅链接 - 根据Node.js代码修复"""
     global sub_txt, argo_domain, sub_encoded
     
     argo_domain = domain
@@ -669,12 +667,15 @@ def generate_links(domain):
     ISP = get_meta_info_sync()
     logger.info(f"获取到ISP信息: {ISP}")
     
-    # 清理ISP信息中的特殊字符
-    ISP_clean = ISP.replace(' ', '_').replace('/', '_').replace('\\', '_').replace(':', '_')
+    # 节点名称生成逻辑与Node.js一致
+    if NAME:
+        node_name = f"{NAME}-{ISP}"
+    else:
+        node_name = ISP
     
-    node_name = f"{NAME}-{ISP_clean}" if NAME else ISP_clean
+    logger.info(f"节点名称: {node_name}")
     
-    # 生成VMESS配置
+    # 生成VMESS配置 - 完全按照Node.js格式
     vmess_config = {
         "v": "2",
         "ps": node_name,
@@ -693,22 +694,28 @@ def generate_links(domain):
         "fp": "firefox"
     }
     
-    vmess_base64 = base64.b64encode(json.dumps(vmess_config).encode()).decode()
+    # 确保JSON格式与Node.js一致（没有额外的空格）
+    vmess_json = json.dumps(vmess_config, separators=(',', ':'))
+    vmess_base64 = base64.b64encode(vmess_json.encode()).decode()
     
-    # 生成三种协议的配置
+    # 生成三种协议的配置 - 完全按照Node.js格式
+    # VLESS配置
     vless_config = f"vless://{UUID}@{CFIP}:{CFPORT}?encryption=none&security=tls&sni={argo_domain}&fp=firefox&type=ws&host={argo_domain}&path=%2Fvless-argo%3Fed%3D2560#{node_name}"
     
+    # VMESS配置
     vmess_config_url = f"vmess://{vmess_base64}"
     
+    # Trojan配置
     trojan_config = f"trojan://{UUID}@{CFIP}:{CFPORT}?security=tls&sni={argo_domain}&fp=firefox&type=ws&host={argo_domain}&path=%2Ftrojan-argo%3Fed%3D2560#{node_name}"
     
+    # 组合订阅内容 - 与Node.js格式完全一致
     sub_txt = f"{vless_config}\n\n{vmess_config_url}\n\n{trojan_config}"
     
     # 将订阅内容进行base64编码
     sub_encoded = base64.b64encode(sub_txt.encode()).decode()
     
-    # 打印base64编码的订阅内容到控制台
-    logger.info(f"订阅内容(base64编码):")
+    # 打印base64编码的订阅内容到控制台（与Node.js行为一致）
+    logger.info("订阅内容(base64编码):")
     print(sub_encoded)
     print("\n" + "="*60)
     
@@ -855,6 +862,7 @@ async def handle_sub(request):
         try:
             test = base64.b64decode(sub_encoded)
             logger.info(f"返回订阅内容，长度: {len(sub_encoded)}")
+            # 返回base64编码的内容
             return web.Response(
                 text=sub_encoded,
                 content_type='text/plain'
@@ -886,7 +894,7 @@ async def handle_stats(request):
     return web.json_response(stats)
 
 async def proxy_xray_websocket(request):
-    """代理WebSocket请求到Xray - 修复协议警告"""
+    """代理WebSocket请求到Xray - 高性能版本"""
     # 提取路径
     path = request.path
     query_string = request.query_string
@@ -928,15 +936,12 @@ async def proxy_xray_websocket(request):
     try:
         # 连接到目标WebSocket服务器
         async with aiohttp.ClientSession() as session:
-            # 设置headers，但不包括Sec-WebSocket-Protocol，让服务器处理
+            # 设置简化的headers
             headers = {
                 'User-Agent': request.headers.get('User-Agent', ''),
                 'Origin': request.headers.get('Origin', ''),
+                'Sec-WebSocket-Protocol': request.headers.get('Sec-WebSocket-Protocol', ''),
             }
-            
-            # 不传递Sec-WebSocket-Protocol头部，避免协议不匹配警告
-            # 如果客户端发送了Sec-WebSocket-Protocol，我们忽略它
-            # 这样可以避免"don't overlap server-known ones"警告
             
             async with session.ws_connect(
                 target_url,
@@ -971,7 +976,7 @@ async def proxy_xray_websocket(request):
                         
     except Exception as e:
         # 减少错误日志输出
-        logger.debug(f"WebSocket连接错误: {e}")
+        pass
     
     # 连接关闭
     connection_counter[connection_type] -= 1

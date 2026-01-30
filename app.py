@@ -26,11 +26,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# 禁用aiohttp访问日志以减少噪音
-logging.getLogger('aiohttp.access').setLevel(logging.WARNING)
-logging.getLogger('aiohttp.server').setLevel(logging.WARNING)
-logging.getLogger('aiohttp.web').setLevel(logging.WARNING)
-
 # 环境变量配置
 UPLOAD_URL = os.getenv('UPLOAD_URL', '')
 PROJECT_URL = os.getenv('PROJECT_URL', '')
@@ -167,7 +162,7 @@ def generate_config():
         "log": {
             "access": "/dev/null",
             "error": "/dev/null",
-            "loglevel": "none"
+            "loglevel": "error"  # 设置为error级别，减少日志
         },
         "dns": {
             "servers": [
@@ -443,8 +438,8 @@ uuid: {UUID}"""
     else:
         logger.info("哪吒监控变量为空，跳过运行")
     
-    # 运行Xray
-    cmd = f"{web_path} -c {config_path}"
+    # 运行Xray - 重定向所有输出到/dev/null
+    cmd = f"{web_path} -c {config_path} > /dev/null 2>&1"
     run_process(cmd, detach=True)
     logger.info(f"{web_name} 运行中")
     time.sleep(1)
@@ -465,11 +460,11 @@ uuid: {UUID}"""
         else:
             args.extend([
                 "--logfile", str(boot_log_path),
-                "--loglevel", "info",
+                "--loglevel", "warn",  # 设置为warn级别，减少日志
                 "--url", f"http://localhost:{ARGO_PORT}"
             ])
         
-        cmd = f"{bot_path} {' '.join(args)}"
+        cmd = f"{bot_path} {' '.join(args)} > /dev/null 2>&1"
         run_process(cmd, detach=True)
         logger.info(f"{bot_name} 运行中")
         time.sleep(5)
@@ -599,7 +594,7 @@ def extract_domains():
                 time.sleep(3)
                 
                 # 重新启动cloudflared
-                cmd = f"nohup {bot_path} tunnel --edge-ip-version auto --no-autoupdate --protocol http2 --logfile {boot_log_path} --loglevel info --url http://localhost:{ARGO_PORT} >/dev/null 2>&1 &"
+                cmd = f"nohup {bot_path} tunnel --edge-ip-version auto --no-autoupdate --protocol http2 --logfile {boot_log_path} --loglevel warn --url http://localhost:{ARGO_PORT} >/dev/null 2>&1 &"
                 run_process(cmd, detach=True)
                 logger.info(f"{bot_name} 重新运行中")
                 time.sleep(3)
@@ -620,45 +615,52 @@ def kill_bot_process():
         pass  # 忽略错误
 
 def get_meta_info_sync():
-    """获取ISP信息（同步版本）- 修复版本"""
-    try:
-        # 尝试第一个API
-        response = requests.get('https://ipapi.co/json/', timeout=5)
-        if response.status_code == 200:
-            data = response.json()
-            country = data.get('country_code', '')
-            org = data.get('org', '')
-            if country and org:
-                # 清理组织名称，移除特殊字符
-                org_clean = ''.join(c for c in org if c.isalnum() or c in ['_', '-', ' '])
-                org_clean = org_clean.replace(' ', '_').replace('-', '_')
-                return f"{country}_{org_clean}"
-    except Exception as e:
-        logger.debug(f"ipapi.co API调用失败: {e}")
+    """获取ISP信息（同步版本）- 改进版本"""
+    # 尝试多个API，增加超时时间
+    apis = [
+        ('https://ipapi.co/json/', lambda data: f"{data.get('country_code', '')}_{data.get('org', '')}" if data.get('country_code') and data.get('org') else None),
+        ('http://ip-api.com/json/', lambda data: f"{data.get('countryCode', '')}_{data.get('org', '')}" if data.get('status') == 'success' and data.get('countryCode') and data.get('org') else None),
+        ('https://api.ip.sb/geoip', lambda data: f"{data.get('country_code', '')}_{data.get('organization', '')}" if data.get('country_code') and data.get('organization') else None),
+    ]
     
-    try:
-        # 尝试第二个API
-        response = requests.get('http://ip-api.com/json/', timeout=5)
-        if response.status_code == 200:
-            data = response.json()
-            if data.get('status') == 'success':
-                country = data.get('countryCode', '')
-                org = data.get('org', '')
-                if country and org:
-                    # 清理组织名称
-                    org_clean = ''.join(c for c in org if c.isalnum() or c in ['_', '-', ' '])
-                    org_clean = org_clean.replace(' ', '_').replace('-', '_')
-                    return f"{country}_{org_clean}"
-    except Exception as e:
-        logger.debug(f"ip-api.com API调用失败: {e}")
+    for api_url, processor in apis:
+        try:
+            response = requests.get(api_url, timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                result = processor(data)
+                if result and result != '_':
+                    logger.info(f"从 {api_url} 获取ISP信息成功: {result}")
+                    return result
+        except Exception as e:
+            logger.debug(f"从 {api_url} 获取ISP信息失败: {e}")
+            continue
     
-    # 尝试获取主机名作为备选
+    # 如果所有API都失败，尝试获取公网IP
     try:
-        import socket
-        hostname = socket.gethostname()
-        return f"LOCAL_{hostname}"
-    except Exception:
-        return 'UNKNOWN'
+        response = requests.get('https://api.ipify.org?format=json', timeout=3)
+        if response.status_code == 200:
+            ip_data = response.json()
+            ip = ip_data.get('ip', '')
+            if ip:
+                # 尝试从IP推断国家代码
+                try:
+                    response2 = requests.get(f'https://ipapi.co/{ip}/json/', timeout=3)
+                    if response2.status_code == 200:
+                        data = response2.json()
+                        country = data.get('country_code', '')
+                        org = data.get('org', '')
+                        if country and org:
+                            return f"{country}_{org}"
+                        elif country:
+                            return f"{country}_Unknown"
+                except:
+                    pass
+                return f"IP_{ip}"
+    except:
+        pass
+    
+    return 'Unknown'
 
 def generate_links(domain):
     """生成订阅链接"""
@@ -668,7 +670,6 @@ def generate_links(domain):
     
     # 使用同步函数获取ISP信息
     ISP = get_meta_info_sync()
-    logger.info(f"获取到ISP信息: {ISP}")
     
     node_name = f"{NAME}-{ISP}" if NAME else ISP
     
@@ -700,7 +701,7 @@ def generate_links(domain):
     
     trojan_config = f"trojan://{UUID}@{CFIP}:{CFPORT}?security=tls&sni={argo_domain}&fp=firefox&type=ws&host={argo_domain}&path=%2Ftrojan-argo%3Fed%3D2560#{node_name}"
     
-    sub_txt = f"{vless_config}\n{vmess_config_url}\n{trojan_config}"
+    sub_txt = f"{vless_config}\n\n{vmess_config_url}\n\n{trojan_config}"
     
     # 将订阅内容进行base64编码
     sub_encoded = base64.b64encode(sub_txt.encode()).decode()
@@ -852,20 +853,18 @@ async def handle_sub(request):
         # 验证sub_encoded是否为有效的base64
         try:
             test = base64.b64decode(sub_encoded)
-            logger.info(f"返回订阅内容，长度: {len(sub_encoded)}")
-            # 设置响应头
-            response = web.Response(text=sub_encoded)
-            response.content_type = 'text/plain'
-            response.charset = 'utf-8'
-            return response
+            return web.Response(
+                text=sub_encoded,
+                content_type='text/plain'
+            )
         except Exception as e:
             logger.error(f"订阅内容base64解码失败: {e}")
             # 如果base64解码失败，返回原始文本作为备份
             if sub_txt:
-                response = web.Response(text=sub_txt)
-                response.content_type = 'text/plain'
-                response.charset = 'utf-8'
-                return response
+                return web.Response(
+                    text=sub_txt,
+                    content_type='text/plain'
+                )
             else:
                 return web.Response(status=503, text="Subscription not ready yet. Please wait a moment and try again.")
     except Exception as e:
@@ -927,10 +926,11 @@ async def proxy_xray_websocket(request):
     try:
         # 连接到目标WebSocket服务器
         async with aiohttp.ClientSession() as session:
-            # 设置简化的headers - 不传递Sec-WebSocket-Protocol头避免警告
+            # 设置简化的headers
             headers = {
                 'User-Agent': request.headers.get('User-Agent', ''),
                 'Origin': request.headers.get('Origin', ''),
+                'Sec-WebSocket-Protocol': request.headers.get('Sec-WebSocket-Protocol', ''),
             }
             
             async with session.ws_connect(
@@ -1131,8 +1131,8 @@ async def start_aiohttp_server():
     """启动aiohttp服务器"""
     app = await init_app()
     
-    # 创建运行器，禁用访问日志
-    runner = web.AppRunner(app, access_log=None)
+    # 创建运行器
+    runner = web.AppRunner(app)
     await runner.setup()
     
     # 启动站点 - 监听所有地址的ARGO_PORT端口

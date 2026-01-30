@@ -18,13 +18,21 @@ import yaml
 import uuid as uuid_module
 import requests
 
-# 设置日志 - 中文
+# 设置日志 - 中文，但禁止aiohttp日志
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger(__name__)
+
+# 禁止aiohttp的日志输出
+logging.getLogger('aiohttp.access').setLevel(logging.WARNING)
+logging.getLogger('aiohttp.client').setLevel(logging.WARNING)
+logging.getLogger('aiohttp.internal').setLevel(logging.WARNING)
+logging.getLogger('aiohttp.server').setLevel(logging.WARNING)
+logging.getLogger('aiohttp.web').setLevel(logging.WARNING)
+logging.getLogger('aiohttp.websocket').setLevel(logging.WARNING)
 
 # 环境变量配置
 UPLOAD_URL = os.getenv('UPLOAD_URL', '')
@@ -600,7 +608,7 @@ def extract_domains():
                 time.sleep(3)
                 extract_domains()
         except Exception as e:
-            logger.error(f'读取boot.log错误: {e}')
+            logger.error(f'读取boot.log错误: {e}")
 
 def kill_bot_process():
     """停止bot进程"""
@@ -658,7 +666,7 @@ def get_meta_info_sync():
     return 'Unknown'
 
 def generate_links(domain):
-    """生成订阅链接 - 根据Node.js代码修复"""
+    """生成订阅链接 - 修复格式问题"""
     global sub_txt, argo_domain, sub_encoded
     
     argo_domain = domain
@@ -687,7 +695,7 @@ def generate_links(domain):
         "net": "ws",
         "type": "none",
         "host": argo_domain,
-        "path": "/vmess-argo?ed=2560",
+        "path": "/vmess-argo",
         "tls": "tls",
         "sni": argo_domain,
         "alpn": "",
@@ -698,17 +706,21 @@ def generate_links(domain):
     vmess_json = json.dumps(vmess_config, separators=(',', ':'))
     vmess_base64 = base64.b64encode(vmess_json.encode()).decode()
     
-    # 生成三种协议的配置 - 完全按照Node.js格式
+    # URL编码路径参数
+    vless_path = quote("/vless-argo?ed=2560")
+    trojan_path = quote("/trojan-argo?ed=2560")
+    
+    # 生成三种协议的配置 - 修复URL编码问题
     # VLESS配置
-    vless_config = f"vless://{UUID}@{CFIP}:{CFPORT}?encryption=none&security=tls&sni={argo_domain}&fp=firefox&type=ws&host={argo_domain}&path=%2Fvless-argo%3Fed%3D2560#{node_name}"
+    vless_config = f"vless://{UUID}@{CFIP}:{CFPORT}?encryption=none&security=tls&sni={argo_domain}&fp=firefox&type=ws&host={argo_domain}&path={vless_path}#{quote(node_name)}"
     
     # VMESS配置
     vmess_config_url = f"vmess://{vmess_base64}"
     
     # Trojan配置
-    trojan_config = f"trojan://{UUID}@{CFIP}:{CFPORT}?security=tls&sni={argo_domain}&fp=firefox&type=ws&host={argo_domain}&path=%2Ftrojan-argo%3Fed%3D2560#{node_name}"
+    trojan_config = f"trojan://{UUID}@{CFIP}:{CFPORT}?security=tls&sni={argo_domain}&fp=firefox&type=ws&host={argo_domain}&path={trojan_path}#{quote(node_name)}"
     
-    # 组合订阅内容 - 与Node.js格式完全一致
+    # 组合订阅内容 - 确保格式正确
     sub_txt = f"{vless_config}\n\n{vmess_config_url}\n\n{trojan_config}"
     
     # 将订阅内容进行base64编码
@@ -894,7 +906,7 @@ async def handle_stats(request):
     return web.json_response(stats)
 
 async def proxy_xray_websocket(request):
-    """代理WebSocket请求到Xray - 高性能版本"""
+    """代理WebSocket请求到Xray - 简化版本"""
     # 提取路径
     path = request.path
     query_string = request.query_string
@@ -920,27 +932,23 @@ async def proxy_xray_websocket(request):
     connection_counter[connection_type] += 1
     connection_counter["total"] += 1
     
-    # 每100个连接打印一次统计
-    if connection_counter["total"] % 100 == 0:
-        logger.info(f"连接统计: VLESS={connection_counter['vless-argo']}, VMESS={connection_counter['vmess-argo']}, Trojan={connection_counter['trojan-argo']}, 总计={connection_counter['total']}")
-    
     # 构建目标URL
     target_url = f"ws://localhost:{target_port}{path}"
     if query_string:
         target_url += f"?{query_string}"
     
-    # 创建WebSocket响应
+    # 创建WebSocket响应 - 不处理协议，让连接继续
     ws = web.WebSocketResponse()
-    await ws.prepare(request)
     
     try:
+        await ws.prepare(request)
+        
         # 连接到目标WebSocket服务器
         async with aiohttp.ClientSession() as session:
-            # 设置简化的headers
+            # 简化的headers，不传递协议头
             headers = {
                 'User-Agent': request.headers.get('User-Agent', ''),
                 'Origin': request.headers.get('Origin', ''),
-                'Sec-WebSocket-Protocol': request.headers.get('Sec-WebSocket-Protocol', ''),
             }
             
             async with session.ws_connect(
@@ -949,7 +957,7 @@ async def proxy_xray_websocket(request):
                 timeout=30
             ) as target_ws:
                 
-                # 双向转发数据 - 使用简单的转发，不记录每条消息
+                # 双向转发数据
                 client_to_target_task = asyncio.create_task(
                     forward_websocket_silent(ws, target_ws)
                 )
@@ -974,9 +982,8 @@ async def proxy_xray_websocket(request):
                     except asyncio.CancelledError:
                         pass
                         
-    except Exception as e:
-        # 减少错误日志输出
-        pass
+    except Exception:
+        pass  # 忽略所有错误
     
     # 连接关闭
     connection_counter[connection_type] -= 1
@@ -985,7 +992,7 @@ async def proxy_xray_websocket(request):
     return ws
 
 async def forward_websocket_silent(source, target):
-    """静默转发WebSocket消息 - 不记录日志"""
+    """静默转发WebSocket消息"""
     try:
         async for msg in source:
             if msg.type == aiohttp.WSMsgType.TEXT:
@@ -993,19 +1000,19 @@ async def forward_websocket_silent(source, target):
             elif msg.type == aiohttp.WSMsgType.BINARY:
                 await target.send_bytes(msg.data)
             elif msg.type == aiohttp.WSMsgType.PING:
-                await target.ping()
+                await target.ping(msg.data if msg.data else b'')
             elif msg.type == aiohttp.WSMsgType.PONG:
-                await target.pong()
+                await target.pong(msg.data if msg.data else b'')
             elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSING, aiohttp.WSMsgType.CLOSED):
-                await target.close()
+                await target.close(code=msg.data if isinstance(msg.data, int) else 1000)
                 break
             elif msg.type == aiohttp.WSMsgType.ERROR:
                 break
-    except Exception:
-        pass  # 忽略所有错误
+    except (asyncio.CancelledError, Exception):
+        pass
 
 async def proxy_xray_http(request):
-    """代理HTTP请求到Xray - 静默版本"""
+    """代理HTTP请求到Xray"""
     # 提取路径和查询参数
     path = request.path
     query_string = request.query_string
@@ -1061,7 +1068,7 @@ async def proxy_xray_http(request):
                     headers=dict(response.headers)
                 )
                 
-    except Exception as e:
+    except Exception:
         return web.Response(status=502, text="Bad Gateway")
 
 async def handle_health_check(request):
@@ -1105,6 +1112,7 @@ def signal_handler(signum, frame):
 
 async def init_app():
     """初始化aiohttp应用"""
+    # 创建应用，禁用访问日志
     app = web.Application()
     
     # 健康检查
@@ -1164,6 +1172,9 @@ def main():
     server_thread = threading.Thread(target=start_server, daemon=True)
     server_thread.start()
     
+    # 等待服务器初始化完成
+    time.sleep(8)
+    
     # 启动监控脚本（在新的线程中，延迟10秒）
     def start_monitor():
         time.sleep(10)
@@ -1194,6 +1205,8 @@ def main():
         print(f"WebSocket路径: /vless-argo, /vmess-argo, /trojan-argo")
         print(f"状态统计: http://localhost:{ARGO_PORT}/stats")
         print(f"健康检查: http://localhost:{ARGO_PORT}/health")
+        print(f"支持的协议: VLESS, VMESS, Trojan")
+        print(f"传输协议: WebSocket over TLS")
         print(f"{'='*60}\n")
         
         try:

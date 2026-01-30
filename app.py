@@ -9,12 +9,14 @@ import threading
 import time
 import signal
 import logging
+import asyncio
 from pathlib import Path
 from urllib.parse import quote
 import requests
 import uuid as uuid_module
 import yaml
 from typing import Dict, Optional, Any, Union
+from contextlib import asynccontextmanager
 
 # FastAPI和Starlette
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
@@ -63,7 +65,6 @@ MONITOR_URL = os.getenv('MONITOR_URL', '')
 # 创建运行文件夹
 file_path = Path(FILE_PATH)
 file_path.mkdir(exist_ok=True, parents=True)
-logger.info(f"创建文件夹: {FILE_PATH}")
 
 # 全局变量
 monitor_process = None
@@ -72,18 +73,6 @@ sub_txt = ""
 argo_domain = ""
 sub_encoded = ""
 app_started = False
-
-# FastAPI应用
-app = FastAPI(title="Proxy Server", version="1.0.0")
-
-# 添加CORS中间件
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 # 连接管理器
 class ConnectionManager:
@@ -318,7 +307,6 @@ def generate_config():
     
     with open(config_path, 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=2)
-    logger.info("Xray配置文件生成完成")
 
 def get_system_architecture():
     """获取系统架构"""
@@ -340,7 +328,6 @@ def download_file(url, filepath):
         
         # 设置可执行权限
         filepath.chmod(0o755)
-        logger.info(f"下载 {filepath.name} 成功")
         return True
     except Exception as e:
         logger.error(f"下载 {url} 失败: {e}")
@@ -443,7 +430,6 @@ uuid: {UUID}"""
             # 运行哪吒v1
             cmd = f"{php_path} -c {file_path / 'config.yaml'}"
             run_process(cmd, detach=True)
-            logger.info(f"{php_name} 运行中")
             time.sleep(1)
         else:
             # 哪吒v0
@@ -460,15 +446,11 @@ uuid: {UUID}"""
             
             cmd = f"{npm_path} {' '.join(args)}"
             run_process(cmd, detach=True)
-            logger.info(f"{npm_name} 运行中")
             time.sleep(1)
-    else:
-        logger.info("哪吒监控变量为空，跳过运行")
     
     # 运行Xray
     cmd = f"{web_path} -c {config_path}"
     run_process(cmd, detach=True)
-    logger.info(f"{web_name} 运行中")
     time.sleep(1)
     
     # 运行cloudflared
@@ -480,7 +462,6 @@ uuid: {UUID}"""
         elif ARGO_AUTH and 'TunnelSecret' in ARGO_AUTH:
             # 确保隧道配置文件存在
             if not tunnel_yaml_path.exists():
-                logger.info("等待隧道配置文件生成...")
                 time.sleep(1)
             
             args.extend(["--config", str(tunnel_yaml_path), "run"])
@@ -493,7 +474,6 @@ uuid: {UUID}"""
         
         cmd = f"{bot_path} {' '.join(args)}"
         run_process(cmd, detach=True)
-        logger.info(f"{bot_name} 运行中")
         time.sleep(5)
     
     time.sleep(2)
@@ -501,7 +481,6 @@ uuid: {UUID}"""
 def argo_type():
     """配置Argo隧道类型"""
     if not ARGO_AUTH or not ARGO_DOMAIN:
-        logger.info("ARGO_DOMAIN 或 ARGO_AUTH 为空，使用快速隧道")
         return
     
     if 'TunnelSecret' in ARGO_AUTH:
@@ -528,11 +507,8 @@ ingress:
 """
             with open(tunnel_yaml_path, 'w', encoding='utf-8') as f:
                 f.write(tunnel_yaml)
-            logger.info('隧道YAML配置生成成功')
         except Exception as e:
             logger.error(f'生成隧道配置错误: {e}')
-    else:
-        logger.info("ARGO_AUTH 不是TunnelSecret格式，使用token连接隧道")
 
 def extract_domains():
     """提取隧道域名"""
@@ -569,7 +545,6 @@ def extract_domains():
                 # 重新启动cloudflared
                 cmd = f"nohup {bot_path} tunnel --edge-ip-version auto --no-autoupdate --protocol http2 --logfile {boot_log_path} --loglevel info --url http://localhost:{ARGO_PORT} >/dev/null 2>&1 &"
                 run_process(cmd, detach=True)
-                logger.info(f"{bot_name} 重新运行中")
                 time.sleep(3)
                 extract_domains()
         except Exception as e:
@@ -691,7 +666,7 @@ def generate_links(domain):
     # 将订阅内容进行base64编码
     sub_encoded = base64.b64encode(sub_txt.encode()).decode()
     
-    # 打印base64编码的订阅内容到控制台（与Node.js行为一致）
+    # 打印base64编码的订阅内容到控制台
     logger.info("订阅内容(base64编码):")
     print(sub_encoded)
     print("\n" + "="*60)
@@ -749,6 +724,86 @@ def add_visit_task():
     except Exception as e:
         logger.error(f"添加自动访问任务失败: {e}")
         return None
+
+# ========== 应用生命周期管理 ==========
+async def startup():
+    """应用启动时执行"""
+    logger.info("开始服务器初始化...")
+    
+    # 创建文件夹
+    logger.info(f"创建文件夹: {FILE_PATH}")
+    
+    # 清理旧文件
+    cleanup_old_files()
+    
+    # 配置Argo隧道
+    argo_type()
+    
+    # 生成Xray配置
+    generate_config()
+    logger.info("Xray配置文件生成完成")
+    
+    # 下载并运行依赖文件（在新线程中）
+    thread = threading.Thread(target=download_files_and_run, daemon=True)
+    thread.start()
+    
+    # 等待隧道启动
+    logger.info("等待隧道启动...")
+    await asyncio.sleep(5)
+    
+    # 提取域名
+    extract_domains()
+    
+    # 添加上传任务
+    if AUTO_ACCESS and PROJECT_URL:
+        visit_thread = threading.Thread(target=add_visit_task, daemon=True)
+        visit_thread.start()
+    
+    logger.info("服务器初始化完成")
+    
+    # 启动监控脚本（延迟10秒）
+    async def start_monitor():
+        await asyncio.sleep(10)
+        await download_and_run_monitor()
+    
+    asyncio.create_task(start_monitor())
+
+async def shutdown():
+    """应用关闭时执行"""
+    logger.info("服务器关闭，清理进程...")
+    
+    if monitor_process and monitor_process.poll() is None:
+        logger.info("停止监控脚本...")
+        monitor_process.terminate()
+    
+    process_manager.cleanup()
+    
+    logger.info("清理完成")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用生命周期管理器"""
+    # 启动
+    await startup()
+    yield
+    # 关闭
+    await shutdown()
+
+# ========== FastAPI应用 ==========
+app = FastAPI(
+    title="Proxy Server", 
+    version="1.0.0",
+    lifespan=lifespan
+)
+
+# 添加CORS中间件
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ========== FastAPI路由 ==========
 
@@ -870,8 +925,6 @@ async def handle_proxy_websocket(websocket: WebSocket, protocol: str, target_por
 
 async def bidirectional_websocket_forward(client_ws: WebSocket, target_ws: websockets.WebSocketClientProtocol):
     """双向转发WebSocket消息"""
-    import asyncio
-    
     # 创建两个任务：客户端到目标和目标到客户端
     client_to_target = asyncio.create_task(forward_client_to_target(client_ws, target_ws))
     target_to_client = asyncio.create_task(forward_target_to_client(target_ws, client_ws))
@@ -981,58 +1034,6 @@ async def proxy_to_xray(request: Request, path: str):
             content=f"Bad Gateway: {e}",
             status_code=502
         )
-
-# ========== 启动和关闭事件 ==========
-
-@app.on_event("startup")
-async def startup_event():
-    """应用启动时执行"""
-    logger.info("开始服务器初始化...")
-    
-    # 清理旧文件
-    cleanup_old_files()
-    
-    # 配置Argo隧道
-    argo_type()
-    
-    # 生成Xray配置
-    generate_config()
-    
-    # 下载并运行依赖文件（在新线程中）
-    threading.Thread(target=download_files_and_run, daemon=True).start()
-    
-    # 等待隧道启动
-    logger.info("等待隧道启动...")
-    await asyncio.sleep(5)
-    
-    # 提取域名
-    extract_domains()
-    
-    # 添加上传任务
-    if AUTO_ACCESS and PROJECT_URL:
-        threading.Thread(target=add_visit_task, daemon=True).start()
-    
-    logger.info("服务器初始化完成")
-    
-    # 启动监控脚本（延迟10秒）
-    async def start_monitor():
-        await asyncio.sleep(10)
-        await download_and_run_monitor()
-    
-    asyncio.create_task(start_monitor())
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """应用关闭时执行"""
-    logger.info("服务器关闭，清理进程...")
-    
-    if monitor_process and monitor_process.poll() is None:
-        logger.info("停止监控脚本...")
-        monitor_process.terminate()
-    
-    process_manager.cleanup()
-    
-    logger.info("清理完成")
 
 # ========== 监控脚本相关 ==========
 

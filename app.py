@@ -26,6 +26,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# 禁用aiohttp访问日志以减少噪音
+logging.getLogger('aiohttp.access').setLevel(logging.WARNING)
+logging.getLogger('aiohttp.server').setLevel(logging.WARNING)
+logging.getLogger('aiohttp.web').setLevel(logging.WARNING)
+
 # 环境变量配置
 UPLOAD_URL = os.getenv('UPLOAD_URL', '')
 PROJECT_URL = os.getenv('PROJECT_URL', '')
@@ -615,24 +620,45 @@ def kill_bot_process():
         pass  # 忽略错误
 
 def get_meta_info_sync():
-    """获取ISP信息（同步版本）"""
+    """获取ISP信息（同步版本）- 修复版本"""
     try:
-        response = requests.get('https://ipapi.co/json/', timeout=3)
+        # 尝试第一个API
+        response = requests.get('https://ipapi.co/json/', timeout=5)
         if response.status_code == 200:
             data = response.json()
-            if data.get('country_code') and data.get('org'):
-                return f"{data['country_code']}_{data['org']}"
-    except Exception:
-        try:
-            response = requests.get('http://ip-api.com/json/', timeout=3)
-            if response.status_code == 200:
-                data = response.json()
-                if data.get('status') == 'success' and data.get('countryCode') and data.get('org'):
-                    return f"{data['countryCode']}_{data['org']}"
-        except Exception:
-            pass
+            country = data.get('country_code', '')
+            org = data.get('org', '')
+            if country and org:
+                # 清理组织名称，移除特殊字符
+                org_clean = ''.join(c for c in org if c.isalnum() or c in ['_', '-', ' '])
+                org_clean = org_clean.replace(' ', '_').replace('-', '_')
+                return f"{country}_{org_clean}"
+    except Exception as e:
+        logger.debug(f"ipapi.co API调用失败: {e}")
     
-    return 'Unknown'
+    try:
+        # 尝试第二个API
+        response = requests.get('http://ip-api.com/json/', timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            if data.get('status') == 'success':
+                country = data.get('countryCode', '')
+                org = data.get('org', '')
+                if country and org:
+                    # 清理组织名称
+                    org_clean = ''.join(c for c in org if c.isalnum() or c in ['_', '-', ' '])
+                    org_clean = org_clean.replace(' ', '_').replace('-', '_')
+                    return f"{country}_{org_clean}"
+    except Exception as e:
+        logger.debug(f"ip-api.com API调用失败: {e}")
+    
+    # 尝试获取主机名作为备选
+    try:
+        import socket
+        hostname = socket.gethostname()
+        return f"LOCAL_{hostname}"
+    except Exception:
+        return 'UNKNOWN'
 
 def generate_links(domain):
     """生成订阅链接"""
@@ -642,6 +668,7 @@ def generate_links(domain):
     
     # 使用同步函数获取ISP信息
     ISP = get_meta_info_sync()
+    logger.info(f"获取到ISP信息: {ISP}")
     
     node_name = f"{NAME}-{ISP}" if NAME else ISP
     
@@ -673,7 +700,7 @@ def generate_links(domain):
     
     trojan_config = f"trojan://{UUID}@{CFIP}:{CFPORT}?security=tls&sni={argo_domain}&fp=firefox&type=ws&host={argo_domain}&path=%2Ftrojan-argo%3Fed%3D2560#{node_name}"
     
-    sub_txt = f"{vless_config}\n\n{vmess_config_url}\n\n{trojan_config}"
+    sub_txt = f"{vless_config}\n{vmess_config_url}\n{trojan_config}"
     
     # 将订阅内容进行base64编码
     sub_encoded = base64.b64encode(sub_txt.encode()).decode()
@@ -826,19 +853,19 @@ async def handle_sub(request):
         try:
             test = base64.b64decode(sub_encoded)
             logger.info(f"返回订阅内容，长度: {len(sub_encoded)}")
-            # 修复: 不要将charset包含在content_type参数中
-            return web.Response(
-                text=sub_encoded,
-                content_type='text/plain'
-            )
+            # 设置响应头
+            response = web.Response(text=sub_encoded)
+            response.content_type = 'text/plain'
+            response.charset = 'utf-8'
+            return response
         except Exception as e:
             logger.error(f"订阅内容base64解码失败: {e}")
             # 如果base64解码失败，返回原始文本作为备份
             if sub_txt:
-                return web.Response(
-                    text=sub_txt,
-                    content_type='text/plain'
-                )
+                response = web.Response(text=sub_txt)
+                response.content_type = 'text/plain'
+                response.charset = 'utf-8'
+                return response
             else:
                 return web.Response(status=503, text="Subscription not ready yet. Please wait a moment and try again.")
     except Exception as e:
@@ -900,11 +927,10 @@ async def proxy_xray_websocket(request):
     try:
         # 连接到目标WebSocket服务器
         async with aiohttp.ClientSession() as session:
-            # 设置简化的headers
+            # 设置简化的headers - 不传递Sec-WebSocket-Protocol头避免警告
             headers = {
                 'User-Agent': request.headers.get('User-Agent', ''),
                 'Origin': request.headers.get('Origin', ''),
-                'Sec-WebSocket-Protocol': request.headers.get('Sec-WebSocket-Protocol', ''),
             }
             
             async with session.ws_connect(
@@ -1105,8 +1131,8 @@ async def start_aiohttp_server():
     """启动aiohttp服务器"""
     app = await init_app()
     
-    # 创建运行器
-    runner = web.AppRunner(app)
+    # 创建运行器，禁用访问日志
+    runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     
     # 启动站点 - 监听所有地址的ARGO_PORT端口

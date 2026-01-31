@@ -844,14 +844,19 @@ xray_paths = ["vless-argo", "vmess-argo", "trojan-argo", "vless", "vmess", "troj
 
 @app.route("/<path:path>", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
 async def proxy_to_xray(request: Request, path: str):
-    """代理HTTP请求到Xray"""
-    # 检查是否为Xray相关路径
+    """
+    代理HTTP请求到Xray
+    注意：此通用路由会捕获所有未被前面路由匹配的请求
+    """
+    # 检查是否为Xray相关路径（可选，增强逻辑清晰度）
+    # 如果不是Xray路径，可以在这里返回404或转发到其他服务
     if any(path.startswith(xray_path) for xray_path in xray_paths):
+        # 这是Xray相关路径，代理到Xray
         target_url = f"http://localhost:3001/{path}"
         if request.query_string:
             target_url += f"?{request.query_string}"
         
-        logger.debug(f"Proxying HTTP to: {target_url}")
+        logger.debug(f"Proxying HTTP to Xray: {target_url}")
         
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -875,23 +880,29 @@ async def proxy_to_xray(request: Request, path: str):
                     headers=dict(response.headers)
                 )
         except Exception as e:
-            logger.error(f"HTTP proxy error: {e}")
+            logger.error(f"HTTP proxy error to Xray: {e}")
             return text(f"Proxy error: {str(e)}", status=502)
     
     # 如果不是Xray路径，返回404
+    # 或者你可以在这里添加其他代理逻辑（例如转发到其他后端服务）
     return text("Not Found", status=404)
 
-# WebSocket代理到Xray
+# WebSocket代理到Xray - 使用唯一前缀避免路由冲突
 @app.websocket("/_ws/<path:path>")
 async def websocket_proxy(request: Request, ws: Websocket, path: str):
-    """代理WebSocket连接到Xray"""
-    # 检查是否为Xray路径
+    """
+    代理WebSocket连接到Xray
+    使用/_ws/前缀以区别于通用HTTP路由
+    """
+    # 路径验证：确保只代理Xray相关路径
+    xray_paths = ["vless-argo", "vmess-argo", "trojan-argo", "vless", "vmess", "trojan"]
     if not any(path.startswith(xray_path) for xray_path in xray_paths):
+        logger.warning(f"Non-Xray WebSocket path attempted: {path}")
         await ws.close()
         return
     
-    original_path = path
-target_ws_url = f"ws://localhost:3001/{original_path}"
+    # 构建目标WebSocket URL（注意：去掉_ws前缀，直接使用原始路径）
+    target_ws_url = f"ws://localhost:3001/{path}"
     if request.query_string:
         target_ws_url += f"?{request.query_string}"
     
@@ -961,7 +972,8 @@ async def status_check(request: Request):
         "subscription_ready": bool(sub_content),
         "xray_running": xray_process is not None and xray_process.returncode is None,
         "cloudflared_running": cloudflared_process is not None and cloudflared_process.returncode is None,
-        "port": ARGO_PORT
+        "port": ARGO_PORT,
+        "websocket_prefix": "/_ws/"
     }
     return text(json.dumps(status_info, indent=2))
 
@@ -984,6 +996,7 @@ if __name__ == "__main__":
     
     logger.info(f"Starting Sanic server on port {ARGO_PORT}")
     logger.info(f"HTTP service running on internal port: {PORT}")
+    logger.info(f"WebSocket proxy available at: /_ws/ path prefix")
     
     # 运行Sanic应用
     app.run(

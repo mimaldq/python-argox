@@ -11,7 +11,7 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Any
 from contextlib import asynccontextmanager
 
 import httpx
@@ -758,12 +758,12 @@ async def run_monitor_script():
     except Exception as e:
         logger.error(f"Error running monitor script: {e}")
 
-# ==================== WebSocket 代理实现 ====================
+# ==================== WebSocket 代理实现 (修复弃用问题) ====================
 class WebSocketProxy:
     """WebSocket 代理类，专门处理 WebSocket 到 WebSocket 的转发"""
     
     def __init__(self):
-        self.active_connections: Dict[str, websockets.WebSocketClientProtocol] = {}
+        self.active_connections: Dict[str, Any] = {}
         self.connection_counter = 0
     
     async def proxy_websocket(self, client_ws: Websocket, target_host: str = "localhost", target_port: int = 3001):
@@ -834,7 +834,7 @@ class WebSocketProxy:
             
             logger.info(f"[{connection_id}] WebSocket connection closed")
     
-    async def forward_client_to_target(self, conn_id: str, client_ws: Websocket, target_ws: websockets.WebSocketClientProtocol):
+    async def forward_client_to_target(self, conn_id: str, client_ws: Websocket, target_ws: Any):
         """转发客户端消息到目标服务器"""
         try:
             while True:
@@ -857,7 +857,7 @@ class WebSocketProxy:
         except Exception as e:
             logger.debug(f"[{conn_id}] Client to target forward error: {e}")
     
-    async def forward_target_to_client(self, conn_id: str, client_ws: Websocket, target_ws: websockets.WebSocketClientProtocol):
+    async def forward_target_to_client(self, conn_id: str, client_ws: Websocket, target_ws: Any):
         """转发目标服务器消息到客户端"""
         try:
             while True:
@@ -885,43 +885,6 @@ class WebSocketProxy:
 
 # 创建 WebSocket 代理实例
 ws_proxy = WebSocketProxy()
-
-# ==================== HTTP 代理实现 ====================
-async def proxy_http_request(request: Request, target_host: str = "localhost", target_port: int = 3001):
-    """代理 HTTP 请求"""
-    target_url = f"http://{target_host}:{target_port}{request.path}"
-    if request.query_string:
-        target_url += f"?{request.query_string}"
-    
-    logger.debug(f"Proxying HTTP to: {target_url}")
-    
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            # 准备请求头
-            headers = dict(request.headers)
-            headers.pop('host', None)
-            
-            # 获取请求体
-            body = request.body if request.body else None
-            
-            # 发送请求
-            response = await client.request(
-                method=request.method,
-                url=target_url,
-                headers=headers,
-                content=body,
-                params=request.args
-            )
-            
-            # 返回响应
-            return HTTPResponse(
-                body=response.content,
-                status=response.status_code,
-                headers=dict(response.headers)
-            )
-    except Exception as e:
-        logger.error(f"HTTP proxy error: {e}")
-        return text(f"Proxy error: {str(e)}", status=502)
 
 # ==================== Sanic 应用配置 ====================
 app = Sanic("XrayProxyServer")
@@ -1021,26 +984,15 @@ async def serve_subscription(request: Request):
         encoded_content = base64.b64encode(sub_content.encode()).decode()
         return text(encoded_content, content_type="text/plain; charset=utf-8")
 
-# Xray 相关路径
-xray_paths = ["vless-argo", "vmess-argo", "trojan-argo", "vless", "vmess", "trojan"]
+# Xray WebSocket 相关路径
+xray_ws_paths = ["vless-argo", "vmess-argo", "trojan-argo"]
 
-# HTTP 代理到 Xray
-@app.route("/<path:path>", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
-async def proxy_to_xray(request: Request, path: str):
-    """代理 HTTP 请求到 Xray"""
-    # 检查是否为 Xray 相关路径
-    if any(path.startswith(xray_path) for xray_path in xray_paths):
-        return await proxy_http_request(request, "localhost", 3001)
-    
-    # 如果不是 Xray 路径，返回 404
-    return text("Not Found", status=404)
-
-# WebSocket 代理到 Xray
+# WebSocket 代理到 Xray - 只有这些路径才进行代理
 @app.websocket("/<path:path>")
-async def websocket_proxy(request: Request, ws: Websocket, path: str):
+async def websocket_proxy_handler(request: Request, ws: Websocket, path: str):
     """代理 WebSocket 连接到 Xray"""
     # 检查是否为 Xray 路径
-    if any(path.startswith(xray_path) for xray_path in xray_paths):
+    if any(path.startswith(xray_path) for xray_path in xray_ws_paths):
         await ws_proxy.proxy_websocket(ws, "localhost", 3001)
     else:
         await ws.close()
@@ -1094,6 +1046,7 @@ if __name__ == "__main__":
     logger.info(f"Starting Sanic server on port {ARGO_PORT}")
     logger.info(f"HTTP service running on internal port: {PORT}")
     logger.info(f"WebSocket proxy ready for Xray traffic")
+    logger.info(f"Xray WebSocket paths: {', '.join(xray_ws_paths)}")
     
     # 运行 Sanic 应用
     app.run(

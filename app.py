@@ -11,12 +11,16 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 from contextlib import asynccontextmanager
+
 import httpx
 import aiofiles
+from websockets import connect as websocket_connect
+from websockets.exceptions import ConnectionClosed
+import websockets
 
-from sanic import Sanic, Request, Websocket, HTTPResponse, text, file
+from sanic import Sanic, Request, Websocket, HTTPResponse, text, file, response
 from sanic.response import ResponseStream
 from sanic.handlers import ErrorHandler
 
@@ -85,6 +89,8 @@ xray_process = None
 nezha_process = None
 cloudflared_process = None
 sub_lock = asyncio.Lock()
+websocket_connections: Set[Websocket] = set()
+ws_connection_lock = asyncio.Lock()
 
 # ==================== 进程管理器 ====================
 class ProcessManager:
@@ -752,7 +758,172 @@ async def run_monitor_script():
     except Exception as e:
         logger.error(f"Error running monitor script: {e}")
 
-# ==================== Sanic应用配置 ====================
+# ==================== WebSocket 代理实现 ====================
+class WebSocketProxy:
+    """WebSocket 代理类，专门处理 WebSocket 到 WebSocket 的转发"""
+    
+    def __init__(self):
+        self.active_connections: Dict[str, websockets.WebSocketClientProtocol] = {}
+        self.connection_counter = 0
+    
+    async def proxy_websocket(self, client_ws: Websocket, target_host: str = "localhost", target_port: int = 3001):
+        """代理 WebSocket 连接"""
+        connection_id = f"ws_{self.connection_counter}"
+        self.connection_counter += 1
+        
+        # 构建目标 WebSocket URL
+        target_path = client_ws.path
+        target_query = client_ws.query_string
+        
+        target_url = f"ws://{target_host}:{target_port}{target_path}"
+        if target_query:
+            target_url += f"?{target_query}"
+        
+        logger.info(f"[{connection_id}] Proxying WebSocket to: {target_url}")
+        
+        try:
+            # 接受客户端 WebSocket 连接
+            await client_ws.accept()
+            
+            async with ws_connection_lock:
+                websocket_connections.add(client_ws)
+            
+            # 连接到目标 WebSocket 服务器
+            target_ws = await websocket_connect(
+                target_url,
+                extra_headers=dict(client_ws.headers),
+                ping_interval=20,
+                ping_timeout=20,
+                close_timeout=5
+            )
+            
+            self.active_connections[connection_id] = target_ws
+            
+            # 创建双向转发任务
+            client_to_target = asyncio.create_task(
+                self.forward_client_to_target(connection_id, client_ws, target_ws)
+            )
+            target_to_client = asyncio.create_task(
+                self.forward_target_to_client(connection_id, client_ws, target_ws)
+            )
+            
+            # 等待任意一个任务完成
+            await asyncio.wait(
+                [client_to_target, target_to_client],
+                return_when=asyncio.FIRST_COMPLETED
+            )
+            
+            # 清理
+            client_to_target.cancel()
+            target_to_client.cancel()
+            
+        except Exception as e:
+            logger.error(f"[{connection_id}] WebSocket proxy error: {e}")
+        finally:
+            # 清理连接
+            if connection_id in self.active_connections:
+                try:
+                    await self.active_connections[connection_id].close()
+                except:
+                    pass
+                del self.active_connections[connection_id]
+            
+            async with ws_connection_lock:
+                if client_ws in websocket_connections:
+                    websocket_connections.remove(client_ws)
+            
+            logger.info(f"[{connection_id}] WebSocket connection closed")
+    
+    async def forward_client_to_target(self, conn_id: str, client_ws: Websocket, target_ws: websockets.WebSocketClientProtocol):
+        """转发客户端消息到目标服务器"""
+        try:
+            while True:
+                # 接收客户端消息
+                try:
+                    client_message = await client_ws.recv()
+                except Exception as e:
+                    logger.debug(f"[{conn_id}] Client receive error: {e}")
+                    break
+                
+                # 转发到目标服务器
+                try:
+                    if isinstance(client_message, str):
+                        await target_ws.send(client_message)
+                    else:
+                        await target_ws.send(client_message)
+                except Exception as e:
+                    logger.error(f"[{conn_id}] Target send error: {e}")
+                    break
+        except Exception as e:
+            logger.debug(f"[{conn_id}] Client to target forward error: {e}")
+    
+    async def forward_target_to_client(self, conn_id: str, client_ws: Websocket, target_ws: websockets.WebSocketClientProtocol):
+        """转发目标服务器消息到客户端"""
+        try:
+            while True:
+                # 接收目标服务器消息
+                try:
+                    target_message = await target_ws.recv()
+                except ConnectionClosed:
+                    logger.debug(f"[{conn_id}] Target connection closed")
+                    break
+                except Exception as e:
+                    logger.debug(f"[{conn_id}] Target receive error: {e}")
+                    break
+                
+                # 转发到客户端
+                try:
+                    if isinstance(target_message, str):
+                        await client_ws.send(target_message)
+                    else:
+                        await client_ws.send(target_message)
+                except Exception as e:
+                    logger.error(f"[{conn_id}] Client send error: {e}")
+                    break
+        except Exception as e:
+            logger.debug(f"[{conn_id}] Target to client forward error: {e}")
+
+# 创建 WebSocket 代理实例
+ws_proxy = WebSocketProxy()
+
+# ==================== HTTP 代理实现 ====================
+async def proxy_http_request(request: Request, target_host: str = "localhost", target_port: int = 3001):
+    """代理 HTTP 请求"""
+    target_url = f"http://{target_host}:{target_port}{request.path}"
+    if request.query_string:
+        target_url += f"?{request.query_string}"
+    
+    logger.debug(f"Proxying HTTP to: {target_url}")
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # 准备请求头
+            headers = dict(request.headers)
+            headers.pop('host', None)
+            
+            # 获取请求体
+            body = request.body if request.body else None
+            
+            # 发送请求
+            response = await client.request(
+                method=request.method,
+                url=target_url,
+                headers=headers,
+                content=body,
+                params=request.args
+            )
+            
+            # 返回响应
+            return HTTPResponse(
+                body=response.content,
+                status=response.status_code,
+                headers=dict(response.headers)
+            )
+    except Exception as e:
+        logger.error(f"HTTP proxy error: {e}")
+        return text(f"Proxy error: {str(e)}", status=502)
+
+# ==================== Sanic 应用配置 ====================
 app = Sanic("XrayProxyServer")
 
 @app.before_server_start
@@ -798,6 +969,7 @@ async def after_start(app, loop):
     logger.info(f"Sanic server started on port {ARGO_PORT}")
     logger.info(f"HTTP traffic -> localhost:{ARGO_PORT}")
     logger.info(f"Xray WebSocket traffic -> localhost:3001")
+    logger.info(f"Active WebSocket proxy ready")
 
 @app.before_server_stop
 async def cleanup_server(app, loop):
@@ -805,6 +977,16 @@ async def cleanup_server(app, loop):
     logger.info("Shutting down application...")
     global is_running
     is_running = False
+    
+    # 关闭所有 WebSocket 连接
+    logger.info("Closing all WebSocket connections...")
+    async with ws_connection_lock:
+        for ws in websocket_connections:
+            try:
+                await ws.close()
+            except:
+                pass
+        websocket_connections.clear()
     
     if monitor_process:
         logger.info("Stopping monitor script...")
@@ -815,7 +997,7 @@ async def cleanup_server(app, loop):
 # ==================== 路由处理 ====================
 @app.get("/")
 async def serve_index(request: Request):
-    """根路由 - 返回index.html"""
+    """根路由 - 返回 index.html"""
     index_path = Path(__file__).parent / "index.html"
     if index_path.exists():
         return await file(str(index_path))
@@ -839,123 +1021,29 @@ async def serve_subscription(request: Request):
         encoded_content = base64.b64encode(sub_content.encode()).decode()
         return text(encoded_content, content_type="text/plain; charset=utf-8")
 
-# HTTP代理到Xray
+# Xray 相关路径
 xray_paths = ["vless-argo", "vmess-argo", "trojan-argo", "vless", "vmess", "trojan"]
 
+# HTTP 代理到 Xray
 @app.route("/<path:path>", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
 async def proxy_to_xray(request: Request, path: str):
-    """
-    代理HTTP请求到Xray
-    注意：此通用路由会捕获所有未被前面路由匹配的请求
-    """
-    # 检查是否为Xray相关路径（可选，增强逻辑清晰度）
-    # 如果不是Xray路径，可以在这里返回404或转发到其他服务
+    """代理 HTTP 请求到 Xray"""
+    # 检查是否为 Xray 相关路径
     if any(path.startswith(xray_path) for xray_path in xray_paths):
-        # 这是Xray相关路径，代理到Xray
-        target_url = f"http://localhost:3001/{path}"
-        if request.query_string:
-            target_url += f"?{request.query_string}"
-        
-        logger.debug(f"Proxying HTTP to Xray: {target_url}")
-        
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                # 准备请求头
-                headers = dict(request.headers)
-                headers.pop('host', None)
-                
-                # 发送请求
-                response = await client.request(
-                    method=request.method,
-                    url=target_url,
-                    headers=headers,
-                    content=request.body if request.body else None,
-                    params=request.args
-                )
-                
-                # 返回响应
-                return HTTPResponse(
-                    body=response.content,
-                    status=response.status_code,
-                    headers=dict(response.headers)
-                )
-        except Exception as e:
-            logger.error(f"HTTP proxy error to Xray: {e}")
-            return text(f"Proxy error: {str(e)}", status=502)
+        return await proxy_http_request(request, "localhost", 3001)
     
-    # 如果不是Xray路径，返回404
-    # 或者你可以在这里添加其他代理逻辑（例如转发到其他后端服务）
+    # 如果不是 Xray 路径，返回 404
     return text("Not Found", status=404)
 
-# WebSocket代理到Xray - 使用唯一前缀避免路由冲突
-@app.websocket("/_ws/<path:path>")
+# WebSocket 代理到 Xray
+@app.websocket("/<path:path>")
 async def websocket_proxy(request: Request, ws: Websocket, path: str):
-    """
-    代理WebSocket连接到Xray
-    使用/_ws/前缀以区别于通用HTTP路由
-    """
-    # 路径验证：确保只代理Xray相关路径
-    xray_paths = ["vless-argo", "vmess-argo", "trojan-argo", "vless", "vmess", "trojan"]
-    if not any(path.startswith(xray_path) for xray_path in xray_paths):
-        logger.warning(f"Non-Xray WebSocket path attempted: {path}")
+    """代理 WebSocket 连接到 Xray"""
+    # 检查是否为 Xray 路径
+    if any(path.startswith(xray_path) for xray_path in xray_paths):
+        await ws_proxy.proxy_websocket(ws, "localhost", 3001)
+    else:
         await ws.close()
-        return
-    
-    # 构建目标WebSocket URL（注意：去掉_ws前缀，直接使用原始路径）
-    target_ws_url = f"ws://localhost:3001/{path}"
-    if request.query_string:
-        target_ws_url += f"?{request.query_string}"
-    
-    logger.debug(f"Proxying WebSocket to: {target_ws_url}")
-    
-    try:
-        # 连接到目标WebSocket
-        async with httpx.AsyncClient() as client:
-            headers = dict(request.headers)
-            headers.pop('host', None)
-            
-            async with client.websocket_connect(target_ws_url, headers=headers) as target_ws:
-                
-                # 创建双向转发任务
-                client_to_target = asyncio.create_task(forward_client_to_target(ws, target_ws))
-                target_to_client = asyncio.create_task(forward_target_to_client(ws, target_ws))
-                
-                # 等待任意一个任务完成
-                await asyncio.wait(
-                    [client_to_target, target_to_client],
-                    return_when=asyncio.FIRST_COMPLETED
-                )
-                
-                # 取消另一个任务
-                client_to_target.cancel()
-                target_to_client.cancel()
-                
-    except Exception as e:
-        logger.error(f"WebSocket proxy error: {e}")
-        try:
-            await ws.close()
-        except:
-            pass
-
-async def forward_client_to_target(client_ws: Websocket, target_ws: httpx.AsyncWebSocketTransport):
-    """转发客户端消息到目标"""
-    try:
-        while True:
-            data = await client_ws.recv()
-            if isinstance(data, str):
-                await target_ws.send_text(data)
-            else:
-                await target_ws.send_bytes(data)
-    except Exception as e:
-        logger.debug(f"Client to target forward error: {e}")
-
-async def forward_target_to_client(client_ws: Websocket, target_ws: httpx.AsyncWebSocketTransport):
-    """转发目标消息到客户端"""
-    try:
-        async for message in target_ws.iter_text():
-            await client_ws.send(message)
-    except Exception as e:
-        logger.debug(f"Target to client forward error: {e}")
 
 # 健康检查路由
 @app.get("/health")
@@ -972,10 +1060,19 @@ async def status_check(request: Request):
         "subscription_ready": bool(sub_content),
         "xray_running": xray_process is not None and xray_process.returncode is None,
         "cloudflared_running": cloudflared_process is not None and cloudflared_process.returncode is None,
-        "port": ARGO_PORT,
-        "websocket_prefix": "/_ws/"
+        "active_websocket_connections": len(websocket_connections),
+        "port": ARGO_PORT
     }
     return text(json.dumps(status_info, indent=2))
+
+# WebSocket 连接统计
+@app.get("/ws-stats")
+async def websocket_stats(request: Request):
+    stats = {
+        "active_connections": len(websocket_connections),
+        "connection_ids": list(ws_proxy.active_connections.keys())
+    }
+    return text(json.dumps(stats, indent=2))
 
 # ==================== 主入口 ====================
 if __name__ == "__main__":
@@ -996,14 +1093,14 @@ if __name__ == "__main__":
     
     logger.info(f"Starting Sanic server on port {ARGO_PORT}")
     logger.info(f"HTTP service running on internal port: {PORT}")
-    logger.info(f"WebSocket proxy available at: /_ws/ path prefix")
+    logger.info(f"WebSocket proxy ready for Xray traffic")
     
-    # 运行Sanic应用
+    # 运行 Sanic 应用
     app.run(
         host="0.0.0.0",
         port=ARGO_PORT,
         debug=False,
         access_log=False,
         auto_reload=False,
-        workers=1  # 对于代理服务，通常1个worker足够
+        workers=1
     )

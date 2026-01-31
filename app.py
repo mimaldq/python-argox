@@ -882,7 +882,7 @@ async def proxy_to_xray(request: Request, path: str):
     return text("Not Found", status=404)
 
 # WebSocket代理到Xray
-@app.websocket("/<path:path>")
+@app.websocket("/_ws/<path:path>")
 async def websocket_proxy(request: Request, ws: Websocket, path: str):
     """代理WebSocket连接到Xray"""
     # 检查是否为Xray路径
@@ -890,7 +890,8 @@ async def websocket_proxy(request: Request, ws: Websocket, path: str):
         await ws.close()
         return
     
-    target_ws_url = f"ws://localhost:3001/{path}"
+    original_path = path
+target_ws_url = f"ws://localhost:3001/{original_path}"
     if request.query_string:
         target_ws_url += f"?{request.query_string}"
     

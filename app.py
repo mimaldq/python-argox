@@ -359,9 +359,9 @@ class XrayConfigGenerator:
                         "decryption": "none",
                         "fallbacks": [
                             {"dest": 3002},
-                            {"path": "/vless-argo", dest: 3003},
-                            {"path": "/vmess-argo", dest: 3004},
-                            {"path": "/trojan-argo", dest: 3005}
+                            {"path": "/vless-argo", "dest": 3003},
+                            {"path": "/vmess-argo", "dest": 3004},
+                            {"path": "/trojan-argo", "dest": 3005}
                         ]
                     },
                     "streamSettings": {
@@ -1056,12 +1056,16 @@ class CloudflareVPS:
         self.argo_tunnel.create_tunnel_config()
         
         # 生成Xray配置
-        config = XrayConfigGenerator.generate_config(UUID)
-        self.file_manager.write_file(
-            self.file_manager.paths.config,
-            json.dumps(config, indent=2)
-        )
-        logger.info("Xray配置文件生成完成")
+        try:
+            config = XrayConfigGenerator.generate_config(UUID)
+            self.file_manager.write_file(
+                self.file_manager.paths.config,
+                json.dumps(config, indent=2)
+            )
+            logger.info("Xray配置文件生成完成")
+        except Exception as e:
+            logger.error(f"生成Xray配置失败: {e}")
+            return
         
         # 下载并运行依赖文件
         await self.download_and_run_files()
@@ -1153,6 +1157,8 @@ class CloudflareVPS:
             ])
             logger.info(f"{os.path.basename(self.file_manager.paths.web)} 运行中")
             await asyncio.sleep(1)
+        else:
+            logger.error(f"Xray客户端不存在: {self.file_manager.paths.web}")
         
         # 启动Cloudflared
         await self.start_cloudflared()

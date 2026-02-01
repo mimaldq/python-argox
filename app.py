@@ -15,7 +15,7 @@ import platform
 import urllib.parse
 from pathlib import Path
 from typing import Optional, Dict, List, Tuple, Any
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from concurrent.futures import ThreadPoolExecutor
@@ -43,13 +43,15 @@ MONITOR_SERVER = os.getenv('MONITOR_SERVER', '')
 MONITOR_URL = os.getenv('MONITOR_URL', '')
 
 # ==================== 日志配置 ====================
+# 修复日志配置：避免handlers中包含None
+log_handlers = [logging.StreamHandler()]
+if os.getenv('LOG_TO_FILE', 'false').lower() == 'true':
+    log_handlers.append(logging.FileHandler('app.log'))
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler('app.log') if os.getenv('LOG_TO_FILE', 'false').lower() == 'true' else None
-    ]
+    handlers=log_handlers
 )
 logger = logging.getLogger(__name__)
 
@@ -60,6 +62,7 @@ proxy_server = None
 monitor_process = None
 http_server = None
 sub_content = ""
+running = True
 
 # ==================== 数据类定义 ====================
 @dataclass
@@ -1185,31 +1188,40 @@ class CloudflareVPS:
     
     async def start_websocket_proxy(self):
         """启动WebSocket代理服务器"""
-        self.ws_app = aiohttp.web.Application()
-        
-        # 添加WebSocket路由
-        self.ws_app.router.add_route('GET', '/vless-argo', proxy_xray_websocket)
-        self.ws_app.router.add_route('GET', '/vmess-argo', proxy_xray_websocket)
-        self.ws_app.router.add_route('GET', '/trojan-argo', proxy_xray_websocket)
-        self.ws_app.router.add_route('GET', '/vless', proxy_xray_websocket)
-        self.ws_app.router.add_route('GET', '/vmess', proxy_xray_websocket)
-        self.ws_app.router.add_route('GET', '/trojan', proxy_xray_websocket)
-        
-        # 添加其他HTTP路由
-        self.ws_app.router.add_route('*', '/{path:.*}', self.handle_http_proxy)
-        
-        self.ws_runner = aiohttp.web.AppRunner(self.ws_app)
-        await self.ws_runner.setup()
-        
-        self.ws_site = aiohttp.web.TCPSite(self.ws_runner, '0.0.0.0', ARGO_PORT)
-        await self.ws_site.start()
-        
-        logger.info(f"代理服务器启动在端口: {ARGO_PORT}")
-        logger.info(f"HTTP流量 -> localhost:{PORT}")
-        logger.info(f"Xray流量 -> localhost:3001")
+        try:
+            import aiohttp.web
+            
+            self.ws_app = aiohttp.web.Application()
+            
+            # 添加WebSocket路由
+            self.ws_app.router.add_route('GET', '/vless-argo', proxy_xray_websocket)
+            self.ws_app.router.add_route('GET', '/vmess-argo', proxy_xray_websocket)
+            self.ws_app.router.add_route('GET', '/trojan-argo', proxy_xray_websocket)
+            self.ws_app.router.add_route('GET', '/vless', proxy_xray_websocket)
+            self.ws_app.router.add_route('GET', '/vmess', proxy_xray_websocket)
+            self.ws_app.router.add_route('GET', '/trojan', proxy_xray_websocket)
+            
+            # 添加其他HTTP路由
+            self.ws_app.router.add_route('*', '/{path:.*}', self.handle_http_proxy)
+            
+            self.ws_runner = aiohttp.web.AppRunner(self.ws_app)
+            await self.ws_runner.setup()
+            
+            self.ws_site = aiohttp.web.TCPSite(self.ws_runner, '0.0.0.0', ARGO_PORT)
+            await self.ws_site.start()
+            
+            logger.info(f"代理服务器启动在端口: {ARGO_PORT}")
+            logger.info(f"HTTP流量 -> localhost:{PORT}")
+            logger.info(f"Xray流量 -> localhost:3001")
+        except ImportError:
+            logger.error("aiohttp 模块未安装，请运行: pip install aiohttp")
+        except Exception as e:
+            logger.error(f"启动WebSocket代理服务器失败: {e}")
     
     async def handle_http_proxy(self, request):
         """处理HTTP代理请求"""
+        import aiohttp.web
+        
         path = request.path
         method = request.method
         

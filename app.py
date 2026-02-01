@@ -204,7 +204,7 @@ class FileManager:
                 try:
                     if file.is_file():
                         file.unlink()
-                except:
+                except Exception:
                     pass
         except Exception as e:
             logger.debug(f"清理文件时出错: {e}")
@@ -219,7 +219,7 @@ class FileManager:
         try:
             with open(path, 'r') as f:
                 return f.read()
-        except:
+        except Exception:
             return None
 
 # ==================== 进程管理器 ====================
@@ -267,7 +267,7 @@ class ProcessManager:
                 subprocess.run(f'taskkill /f /im {process_name}', shell=True)
             else:
                 subprocess.run(f'pkill -f {process_name}', shell=True)
-        except:
+        except Exception:
             pass
     
     def cleanup(self):
@@ -276,10 +276,10 @@ class ProcessManager:
             try:
                 process.terminate()
                 process.wait(timeout=5)
-            except:
+            except Exception:
                 try:
                     process.kill()
-                except:
+                except Exception:
                     pass
         self.processes.clear()
 
@@ -536,7 +536,7 @@ class NodeGenerator:
                             data = await response.json()
                             if data.get('country_code') and data.get('org'):
                                 return f"{data['country_code']}_{data['org']}"
-                except:
+                except Exception:
                     pass
                 
                 # 尝试第二个API
@@ -546,7 +546,7 @@ class NodeGenerator:
                             data = await response.json()
                             if data.get('status') == 'success' and data.get('countryCode'):
                                 return f"{data['countryCode']}_{data.get('org', 'Unknown')}"
-                except:
+                except Exception:
                     pass
         except Exception as e:
             logger.debug(f"获取ISP信息失败: {e}")
@@ -741,10 +741,10 @@ class MonitorManager:
             try:
                 self.process.terminate()
                 self.process.wait(timeout=5)
-            except:
+            except Exception:
                 try:
                     self.process.kill()
-                except:
+                except Exception:
                     pass
             self.process = None
             logger.info("监控脚本已停止")
@@ -843,11 +843,11 @@ uuid: {UUID}
             try:
                 self.process.terminate()
                 self.process.wait(timeout=5)
-            except:
+            except Exception:
                 try:
                     self.process.kill()
-                except:
-                pass
+                except Exception:
+                    pass
             self.process = None
             logger.info("哪吒监控已停止")
 
@@ -881,7 +881,7 @@ async def forward_websocket_silent(source, target):
     finally:
         try:
             await target.close()
-        except:
+        except Exception:
             pass
 
 def get_target_port_and_type(path: str) -> Optional[Tuple[int, str]]:
@@ -1365,7 +1365,7 @@ class CloudflareVPS:
             try:
                 if os.path.exists(file_path):
                     os.remove(file_path)
-            except:
+            except Exception:
                 pass
         
         logger.info("应用正在运行")
@@ -1409,7 +1409,11 @@ def signal_handler(signum, frame):
 # ==================== 主函数 ====================
 async def main():
     """主函数"""
-    global running
+    global running, file_manager, process_manager
+    
+    # 初始化全局管理器
+    file_manager = FileManager(FILE_PATH)
+    process_manager = ProcessManager()
     
     # 创建应用实例
     app = CloudflareVPS()

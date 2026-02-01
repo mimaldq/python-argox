@@ -359,9 +359,9 @@ class XrayConfigGenerator:
                         "decryption": "none",
                         "fallbacks": [
                             {"dest": 3002},
-                            {"path": "/vless-argo", "dest": 3003},
-                            {"path": "/vmess-argo", "dest": 3004},
-                            {"path": "/trojan-argo", "dest": 3005}
+                            {"path": "/vless-argo", dest: 3003},
+                            {"path": "/vmess-argo", dest: 3004},
+                            {"path": "/trojan-argo", dest: 3005}
                         ]
                     },
                     "streamSettings": {
@@ -854,153 +854,177 @@ uuid: {UUID}
             self.process = None
             logger.info("哪吒监控已停止")
 
-# ==================== WebSocket代理服务器 ====================
-connection_counter = {
-    "vless-argo": 0,
-    "vmess-argo": 0,
-    "trojan-argo": 0,
-    "total": 0
-}
-
-last_stat_time = 0
-
-async def forward_websocket_silent(source, target):
-    """静默转发WebSocket数据"""
-    try:
-        async for msg in source:
-            if msg.type == aiohttp.WSMsgType.TEXT:
-                await target.send_str(msg.data)
-            elif msg.type == aiohttp.WSMsgType.BINARY:
-                await target.send_bytes(msg.data)
-            elif msg.type == aiohttp.WSMsgType.PING:
-                await target.ping()
-            elif msg.type == aiohttp.WSMsgType.PONG:
-                await target.pong()
-            elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSING, 
-                             aiohttp.WSMsgType.CLOSED):
-                break
-    except Exception:
-        pass
-    finally:
-        try:
-            await target.close()
-        except Exception:
-            pass
-
-def get_target_port_and_type(path: str) -> Optional[Tuple[int, str]]:
-    """根据路径获取目标端口和类型"""
-    if path.startswith('/vless-argo'):
-        return 3003, "vless-argo"
-    elif path.startswith('/vmess-argo'):
-        return 3004, "vmess-argo"
-    elif path.startswith('/trojan-argo'):
-        return 3005, "trojan-argo"
-    elif path == '/vless':
-        return 3001, "vless"
-    elif path == '/vmess':
-        return 3001, "vmess"
-    elif path == '/trojan':
-        return 3001, "trojan"
-    else:
-        return None
-
-async def proxy_xray_websocket(request):
-    """代理WebSocket请求到Xray"""
-    global connection_counter, last_stat_time
+# ==================== 简化的代理服务器 ====================
+class SimpleProxyServer:
+    """简化的代理服务器，直接转发到对应端口"""
     
-    path = request.path
-    query_string = str(request.query_string)
+    def __init__(self):
+        self.http_server = None
     
-    # 获取目标端口和连接类型
-    result = get_target_port_and_type(path)
-    if result is None:
-        return aiohttp.web.Response(status=404, text="Path not found")
-    
-    target_port, connection_type = result
-    
-    # 更新连接统计
-    connection_counter[connection_type] += 1
-    connection_counter["total"] += 1
-    
-    # 每5分钟或每1000个连接打印一次统计
-    current_time = time.time()
-    if (current_time - last_stat_time > 300 or 
-        connection_counter["total"] % 1000 == 0):
-        logger.info(
-            f"连接统计: "
-            f"VLESS-Argo={connection_counter['vless-argo']}, "
-            f"VMESS-Argo={connection_counter['vmess-argo']}, "
-            f"Trojan-Argo={connection_counter['trojan-argo']}, "
-            f"总计={connection_counter['total']}"
-        )
-        last_stat_time = current_time
-    
-    # 构建目标URL
-    target_url = f"ws://localhost:{target_port}{path}"
-    if query_string:
-        target_url += f"?{query_string}"
-    
-    # 处理WebSocket子协议
-    client_protocols = request.headers.get('Sec-WebSocket-Protocol', '')
-    
-    # 创建WebSocket响应
-    if client_protocols:
-        ws = aiohttp.web.WebSocketResponse(protocol=client_protocols.split(',')[0])
-    else:
-        ws = aiohttp.web.WebSocketResponse()
-    
-    try:
-        await ws.prepare(request)
-        
-        # 连接到目标WebSocket服务器
-        async with aiohttp.ClientSession() as session:
-            headers = {
-                'User-Agent': request.headers.get('User-Agent', ''),
-                'Origin': request.headers.get('Origin', ''),
-            }
+    def start(self):
+        """启动代理服务器"""
+        def run_proxy_server():
+            import socketserver
+            import http.server
             
-            if client_protocols:
-                headers['Sec-WebSocket-Protocol'] = client_protocols
-            
-            async with session.ws_connect(
-                target_url,
-                headers=headers,
-                timeout=30
-            ) as target_ws:
+            class ProxyHandler(http.server.BaseHTTPRequestHandler):
+                def do_GET(self):
+                    # 根据路径转发到不同端口
+                    path = self.path
+                    
+                    # 如果是WebSocket请求
+                    if self.headers.get('Upgrade', '').lower() == 'websocket':
+                        self.handle_websocket(path)
+                    else:
+                        self.handle_http(path)
                 
-                # 双向转发数据
-                client_to_target = asyncio.create_task(
-                    forward_websocket_silent(ws, target_ws)
-                )
-                target_to_client = asyncio.create_task(
-                    forward_websocket_silent(target_ws, ws)
-                )
-                
-                # 等待任意一个任务完成
-                done, pending = await asyncio.wait(
-                    [client_to_target, target_to_client],
-                    return_when=asyncio.FIRST_COMPLETED
-                )
-                
-                # 取消另一个任务
-                for task in pending:
-                    task.cancel()
-                
-                # 等待被取消的任务结束
-                for task in pending:
+                def handle_websocket(self, path):
+                    """处理WebSocket请求"""
+                    # 删除Sec-WebSocket-Protocol头
+                    if 'Sec-WebSocket-Protocol' in self.headers:
+                        del self.headers['Sec-WebSocket-Protocol']
+                    
+                    # 根据路径确定目标端口
+                    target_port = self.get_target_port(path)
+                    if not target_port:
+                        self.send_response(404)
+                        self.end_headers()
+                        return
+                    
+                    # 建立到目标端口的连接
                     try:
-                        await task
-                    except asyncio.CancelledError:
-                        pass
+                        import socket
+                        import base64
+                        import hashlib
                         
-    except Exception as e:
-        logger.debug(f"WebSocket连接异常: {e}")
+                        # 获取WebSocket key
+                        ws_key = self.headers.get('Sec-WebSocket-Key', '')
+                        
+                        # 发送101 Switching Protocols响应
+                        self.send_response(101)
+                        self.send_header('Upgrade', 'websocket')
+                        self.send_header('Connection', 'Upgrade')
+                        self.send_header('Sec-WebSocket-Accept', 
+                                        base64.b64encode(hashlib.sha1(
+                                            (ws_key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').encode()
+                                        ).digest()).decode())
+                        self.end_headers()
+                        
+                        # 建立到目标端口的socket连接
+                        target_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        target_socket.connect(('127.0.0.1', target_port))
+                        
+                        # 双向转发数据
+                        self.forward_sockets(self.connection, target_socket)
+                        
+                    except Exception as e:
+                        logger.error(f"WebSocket代理错误: {e}")
+                
+                def handle_http(self, path):
+                    """处理HTTP请求"""
+                    # 根据路径确定目标端口
+                    if (path.startswith('/vless-argo') or 
+                        path.startswith('/vmess-argo') or 
+                        path.startswith('/trojan-argo') or
+                        path in ['/vless', '/vmess', '/trojan']):
+                        # 转发到Xray
+                        target_port = 3001
+                    else:
+                        # 转发到HTTP服务器
+                        target_port = PORT
+                    
+                    # 转发请求
+                    try:
+                        import http.client
+                        
+                        # 连接到目标服务器
+                        conn = http.client.HTTPConnection('127.0.0.1', target_port)
+                        
+                        # 转发请求头
+                        headers = {}
+                        for key, value in self.headers.items():
+                            if key.lower() not in ['host', 'connection']:
+                                headers[key] = value
+                        
+                        # 转发请求
+                        conn.request(self.command, path, self.rfile.read(int(self.headers.get('Content-Length', 0))) 
+                                    if self.command in ['POST', 'PUT'] else None, headers)
+                        
+                        # 获取响应
+                        resp = conn.getresponse()
+                        
+                        # 转发响应
+                        self.send_response(resp.status)
+                        for header, value in resp.getheaders():
+                            self.send_header(header, value)
+                        self.end_headers()
+                        
+                        # 转发响应体
+                        self.wfile.write(resp.read())
+                        
+                    except Exception as e:
+                        logger.error(f"HTTP代理错误: {e}")
+                        self.send_response(502)
+                        self.end_headers()
+                
+                def get_target_port(self, path):
+                    """根据路径获取目标端口"""
+                    if path.startswith('/vless-argo'):
+                        return 3003
+                    elif path.startswith('/vmess-argo'):
+                        return 3004
+                    elif path.startswith('/trojan-argo'):
+                        return 3005
+                    elif path in ['/vless', '/vmess', '/trojan']:
+                        return 3001
+                    else:
+                        return None
+                
+                def forward_sockets(self, client_socket, target_socket):
+                    """双向转发socket数据"""
+                    import select
+                    
+                    sockets = [client_socket, target_socket]
+                    while True:
+                        try:
+                            read_sockets, _, _ = select.select(sockets, [], [])
+                            
+                            for sock in read_sockets:
+                                data = sock.recv(4096)
+                                if not data:
+                                    return
+                                
+                                if sock is client_socket:
+                                    target_socket.send(data)
+                                else:
+                                    client_socket.send(data)
+                        except:
+                            break
+                    
+                    # 关闭连接
+                    client_socket.close()
+                    target_socket.close()
+                
+                def log_message(self, format, *args):
+                    """不记录访问日志"""
+                    pass
+            
+            try:
+                self.http_server = socketserver.TCPServer(('0.0.0.0', ARGO_PORT), ProxyHandler)
+                logger.info(f"代理服务器启动在端口: {ARGO_PORT}")
+                logger.info(f"HTTP流量 -> localhost:{PORT}")
+                logger.info(f"Xray流量 -> localhost:3001")
+                self.http_server.serve_forever()
+            except Exception as e:
+                logger.error(f"代理服务器启动失败: {e}")
+        
+        proxy_thread = threading.Thread(target=run_proxy_server, daemon=True)
+        proxy_thread.start()
     
-    # 连接关闭
-    connection_counter[connection_type] -= 1
-    connection_counter["total"] -= 1
-    
-    return ws
+    def stop(self):
+        """停止代理服务器"""
+        if self.http_server:
+            self.http_server.shutdown()
 
 # ==================== 主应用类 ====================
 class CloudflareVPS:
@@ -1012,10 +1036,8 @@ class CloudflareVPS:
         self.argo_tunnel = ArgoTunnelManager(self.file_manager)
         self.ne_zha_manager = NeZhaManager(self.file_manager, self.process_manager)
         self.monitor_manager = MonitorManager(self.file_manager, self.process_manager)
+        self.proxy_server = SimpleProxyServer()
         self.http_server = None
-        self.ws_app = None
-        self.ws_runner = None
-        self.ws_site = None
     
     async def initialize(self):
         """初始化应用"""
@@ -1047,8 +1069,8 @@ class CloudflareVPS:
         # 启动HTTP服务器
         self.start_http_server()
         
-        # 启动WebSocket代理服务器
-        await self.start_websocket_proxy()
+        # 启动代理服务器
+        self.proxy_server.start()
         
         # 等待隧道启动
         logger.info("等待隧道启动...")
@@ -1186,93 +1208,6 @@ class CloudflareVPS:
         http_thread = threading.Thread(target=run_http_server, daemon=True)
         http_thread.start()
     
-    async def start_websocket_proxy(self):
-        """启动WebSocket代理服务器"""
-        try:
-            import aiohttp.web
-            
-            self.ws_app = aiohttp.web.Application()
-            
-            # 添加WebSocket路由
-            self.ws_app.router.add_route('GET', '/vless-argo', proxy_xray_websocket)
-            self.ws_app.router.add_route('GET', '/vmess-argo', proxy_xray_websocket)
-            self.ws_app.router.add_route('GET', '/trojan-argo', proxy_xray_websocket)
-            self.ws_app.router.add_route('GET', '/vless', proxy_xray_websocket)
-            self.ws_app.router.add_route('GET', '/vmess', proxy_xray_websocket)
-            self.ws_app.router.add_route('GET', '/trojan', proxy_xray_websocket)
-            
-            # 添加其他HTTP路由
-            self.ws_app.router.add_route('*', '/{path:.*}', self.handle_http_proxy)
-            
-            self.ws_runner = aiohttp.web.AppRunner(self.ws_app)
-            await self.ws_runner.setup()
-            
-            self.ws_site = aiohttp.web.TCPSite(self.ws_runner, '0.0.0.0', ARGO_PORT)
-            await self.ws_site.start()
-            
-            logger.info(f"代理服务器启动在端口: {ARGO_PORT}")
-            logger.info(f"HTTP流量 -> localhost:{PORT}")
-            logger.info(f"Xray流量 -> localhost:3001")
-        except ImportError:
-            logger.error("aiohttp 模块未安装，请运行: pip install aiohttp")
-        except Exception as e:
-            logger.error(f"启动WebSocket代理服务器失败: {e}")
-    
-    async def handle_http_proxy(self, request):
-        """处理HTTP代理请求"""
-        import aiohttp.web
-        
-        path = request.path
-        method = request.method
-        
-        # 检查是否是WebSocket升级请求
-        if request.headers.get('Upgrade', '').lower() == 'websocket':
-            # 应该由WebSocket路由处理，这里返回错误
-            return aiohttp.web.Response(status=400, text="WebSocket requests should use specific endpoints")
-        
-        # 根据路径决定转发目标
-        if (path.startswith('/vless-argo') or 
-            path.startswith('/vmess-argo') or 
-            path.startswith('/trojan-argo') or
-            path in ['/vless', '/vmess', '/trojan']):
-            # Xray HTTP流量
-            target_url = f"http://localhost:3001{path}"
-        else:
-            # 普通HTTP流量
-            target_url = f"http://localhost:{PORT}{path}"
-        
-        # 转发请求
-        try:
-            async with aiohttp.ClientSession() as session:
-                # 准备请求数据
-                data = await request.read() if request.can_read_body else None
-                
-                # 转发请求头
-                headers = dict(request.headers)
-                headers.pop('Host', None)
-                
-                async with session.request(
-                    method=method,
-                    url=target_url,
-                    headers=headers,
-                    data=data,
-                    timeout=30
-                ) as response:
-                    
-                    # 创建响应
-                    resp_headers = dict(response.headers)
-                    body = await response.read()
-                    
-                    return aiohttp.web.Response(
-                        status=response.status,
-                        headers=resp_headers,
-                        body=body
-                    )
-        
-        except Exception as e:
-            logger.error(f"HTTP代理错误: {e}")
-            return aiohttp.web.Response(status=502, text="Bad Gateway")
-    
     async def generate_subscription(self):
         """生成订阅"""
         global sub_content
@@ -1396,11 +1331,8 @@ class CloudflareVPS:
         # 停止进程管理器
         self.process_manager.cleanup()
         
-        # 停止WebSocket服务器
-        if self.ws_site:
-            await self.ws_site.stop()
-        if self.ws_runner:
-            await self.ws_runner.cleanup()
+        # 停止代理服务器
+        self.proxy_server.stop()
         
         # 停止HTTP服务器
         if self.http_server:

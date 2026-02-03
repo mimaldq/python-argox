@@ -1114,7 +1114,7 @@ uuid: {UUID}
                     logger.error('boot.log文件不存在')
                     return None
             except Exception as e:
-                logger.error(f'提取域名错误: {e}")
+                logger.error(f"提取域名错误: {e}")
                 return None
     
     async def add_visit_task(self):

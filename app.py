@@ -446,28 +446,90 @@ uuid: {UUID}"""
     
     # 运行cloudflared
     if bot_path.exists():
+        # 先清除旧的boot.log文件
+        if boot_log_path.exists():
+            boot_log_path.unlink(missing_ok=True)
+        
         args = ["tunnel", "--edge-ip-version", "auto", "--no-autoupdate", "--protocol", "http2"]
         
         if ARGO_AUTH and ARGO_AUTH.strip() and len(ARGO_AUTH.strip()) >= 120 and len(ARGO_AUTH.strip()) <= 250:
+            # Token格式的认证
+            logger.info(f"使用Token连接隧道")
             args.extend(["run", "--token", ARGO_AUTH.strip()])
+            
+            # 添加日志参数
+            args.extend([
+                "--logfile", str(boot_log_path),
+                "--loglevel", "info"
+            ])
+            
         elif ARGO_AUTH and 'TunnelSecret' in ARGO_AUTH:
             # 确保隧道配置文件存在
             if not tunnel_yaml_path.exists():
-                logger.info("等待隧道配置文件生成...")
-                time.sleep(1)
-            
-            args.extend(["--config", str(tunnel_yaml_path), "run"])
+                logger.error("隧道配置文件不存在，检查ARGO_AUTH格式")
+                # 回退到快速隧道
+                args.extend([
+                    "--logfile", str(boot_log_path),
+                    "--loglevel", "info",
+                    "--url", f"http://localhost:{ARGO_PORT}"
+                ])
+            else:
+                logger.info(f"使用配置文件连接隧道: {tunnel_yaml_path}")
+                args.extend([
+                    "--config", str(tunnel_yaml_path),
+                    "run"
+                ])
+                
+                # 即使使用配置文件，也添加日志参数以便调试
+                args.extend([
+                    "--logfile", str(boot_log_path),
+                    "--loglevel", "info"
+                ])
         else:
+            # 快速隧道
+            logger.info(f"使用快速隧道，端口: {ARGO_PORT}")
             args.extend([
                 "--logfile", str(boot_log_path),
                 "--loglevel", "info",
                 "--url", f"http://localhost:{ARGO_PORT}"
             ])
         
+        # 构建完整的命令
         cmd = f"{bot_path} {' '.join(args)}"
-        run_process(cmd, detach=True)
-        logger.info(f"{bot_name} 运行中")
-        time.sleep(5)
+        logger.info(f"启动cloudflared命令: {' '.join(args[:5])}...")
+        
+        # 使用subprocess.Popen启动，确保可以捕获输出
+        try:
+            process = subprocess.Popen(
+                cmd,
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                universal_newlines=True
+            )
+            process_manager.add_process(process)
+            
+            # 启动一个线程来读取输出
+            def read_output():
+                try:
+                    for line in process.stdout:
+                        line = line.strip()
+                        if line:
+                            logger.info(f"[cloudflared] {line}")
+                            # 检查是否有域名输出
+                            if 'trycloudflare.com' in line or 'https://' in line:
+                                logger.info(f"找到隧道信息: {line}")
+                except Exception as e:
+                    logger.error(f"读取cloudflared输出时出错: {e}")
+            
+            threading.Thread(target=read_output, daemon=True).start()
+            
+            logger.info(f"{bot_name} 运行中")
+            time.sleep(5)  # 给cloudflared一些启动时间
+        except Exception as e:
+            logger.error(f"启动cloudflared失败: {e}")
     
     time.sleep(2)
 
@@ -565,42 +627,67 @@ def extract_domains():
     """提取隧道域名"""
     global argo_domain
     
+    # 如果是固定隧道，直接使用配置的域名
     if ARGO_AUTH and ARGO_DOMAIN:
         argo_domain = ARGO_DOMAIN
         logger.info(f'使用固定域名: {argo_domain}')
         generate_links(argo_domain)
-    else:
-        try:
-            if not boot_log_path.exists():
-                logger.error("boot.log 文件不存在")
+        return
+    
+    # 否则从日志中提取临时域名
+    try:
+        if not boot_log_path.exists():
+            logger.error("boot.log 文件不存在")
+            # 等待一下再重试
+            time.sleep(5)
+            if boot_log_path.exists():
+                return extract_domains()
+            return
+        
+        with open(boot_log_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        import re
+        # 尝试多种模式匹配域名
+        patterns = [
+            r'https?://([^ ]*trycloudflare\.com)',
+            r'https?://([^ \n]*\.trycloudflare\.com)',
+            r'https?://([^ ]*\.cfargotunnel\.com)',
+            r'at\s+(https?://[^ ]*\.(?:trycloudflare\.com|cfargotunnel\.com))'
+        ]
+        
+        for pattern in patterns:
+            matches = re.findall(pattern, content)
+            if matches:
+                argo_domain = matches[0]
+                logger.info(f'找到临时域名: {argo_domain}')
+                generate_links(argo_domain)
                 return
-            
+        
+        # 如果没找到域名，记录日志内容以便调试
+        logger.warning(f'未找到域名，日志内容: {content[:200]}...')
+        
+        # 等待并重试
+        logger.info('未找到域名，等待5秒后重试...')
+        time.sleep(5)
+        
+        # 重新读取日志
+        if boot_log_path.exists():
             with open(boot_log_path, 'r', encoding='utf-8') as f:
                 content = f.read()
             
-            import re
-            domains = re.findall(r'https?://([^ ]*trycloudflare\.com)', content)
-            
-            if domains:
-                argo_domain = domains[0]
-                logger.info(f'找到临时域名: {argo_domain}')
-                generate_links(argo_domain)
-            else:
-                logger.info('未找到域名，重新运行bot以获取Argo域名')
-                boot_log_path.unlink(missing_ok=True)
-                
-                # 停止现有的cloudflared进程
-                kill_bot_process()
-                time.sleep(3)
-                
-                # 重新启动cloudflared
-                cmd = f"nohup {bot_path} tunnel --edge-ip-version auto --no-autoupdate --protocol http2 --logfile {boot_log_path} --loglevel info --url http://localhost:{ARGO_PORT} >/dev/null 2>&1 &"
-                run_process(cmd, detach=True)
-                logger.info(f"{bot_name} 重新运行中")
-                time.sleep(3)
-                extract_domains()
-        except Exception as e:
-            logger.error(f'读取boot.log错误: {e}')
+            for pattern in patterns:
+                matches = re.findall(pattern, content)
+                if matches:
+                    argo_domain = matches[0]
+                    logger.info(f'重试找到临时域名: {argo_domain}')
+                    generate_links(argo_domain)
+                    return
+        
+        logger.error('未找到Argo隧道域名，请检查cloudflared日志')
+        
+    except Exception as e:
+        logger.error(f'读取boot.log错误: {e}')
 
 def kill_bot_process():
     """停止bot进程"""

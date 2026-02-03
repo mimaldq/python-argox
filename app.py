@@ -450,63 +450,66 @@ uuid: {UUID}"""
         if boot_log_path.exists():
             boot_log_path.unlink(missing_ok=True)
         
-        args = ["tunnel", "--edge-ip-version", "auto", "--no-autoupdate", "--protocol", "http2"]
+        # 基础参数
+        base_args = [
+            "--edge-ip-version", "auto",
+            "--no-autoupdate",
+            "--protocol", "http2"
+        ]
         
-        if ARGO_AUTH and ARGO_AUTH.strip() and len(ARGO_AUTH.strip()) >= 120 and len(ARGO_AUTH.strip()) <= 250:
-            # Token格式的认证
-            logger.info(f"使用Token连接隧道")
-            args.extend(["run", "--token", ARGO_AUTH.strip()])
-            
-            # 添加日志参数
-            args.extend([
-                "--logfile", str(boot_log_path),
-                "--loglevel", "info"
-            ])
-            
-        elif ARGO_AUTH and 'TunnelSecret' in ARGO_AUTH:
-            # TunnelSecret格式
-            logger.info(f"使用JSON隧道凭证连接隧道")
-            
-            # 确保隧道配置文件存在
-            if not tunnel_yaml_path.exists():
-                logger.error("隧道配置文件不存在，检查ARGO_AUTH格式")
-                # 回退到快速隧道
-                args.extend([
-                    "--logfile", str(boot_log_path),
-                    "--loglevel", "info",
-                    "--url", f"http://localhost:{ARGO_PORT}"
-                ])
-            else:
-                logger.info(f"使用配置文件连接隧道: {tunnel_yaml_path}")
-                # 正确的命令格式: cloudflared tunnel --config config.yml run
-                args.extend([
-                    "--config", str(tunnel_yaml_path),
-                    "run"
-                ])
+        # 根据认证类型构建不同的命令
+        if ARGO_AUTH and ARGO_AUTH.strip():
+            # 首先检查是否是有效的Token格式（120-250字符）
+            if 120 <= len(ARGO_AUTH.strip()) <= 250 and 'TunnelSecret' not in ARGO_AUTH:
+                # Token格式的认证
+                logger.info("使用Token连接隧道")
+                # Token格式: cloudflared tunnel run --token <token>
+                cmd_args = ["tunnel", "run", "--token", ARGO_AUTH.strip()]
+                cmd_args.extend(base_args)
                 
-                # 添加日志参数
-                args.extend([
-                    "--logfile", str(boot_log_path),
-                    "--loglevel", "info"
-                ])
+            elif 'TunnelSecret' in ARGO_AUTH:
+                # TunnelSecret格式
+                logger.info("使用JSON隧道凭证连接隧道")
+                
+                # 确保隧道配置文件存在
+                if not tunnel_yaml_path.exists():
+                    logger.error("隧道配置文件不存在")
+                    # 回退到快速隧道
+                    cmd_args = ["tunnel"]
+                    cmd_args.extend(base_args)
+                    cmd_args.extend(["--url", f"http://localhost:{ARGO_PORT}"])
+                else:
+                    # TunnelSecret格式: cloudflared tunnel --config config.yml run
+                    cmd_args = ["tunnel", "--config", str(tunnel_yaml_path), "run"]
+                    cmd_args.extend(base_args)
+            else:
+                # 其他情况，使用快速隧道
+                logger.info("使用快速隧道")
+                cmd_args = ["tunnel"]
+                cmd_args.extend(base_args)
+                cmd_args.extend(["--url", f"http://localhost:{ARGO_PORT}"])
         else:
             # 快速隧道
-            logger.info(f"使用快速隧道，端口: {ARGO_PORT}")
-            args.extend([
-                "--logfile", str(boot_log_path),
-                "--loglevel", "info",
-                "--url", f"http://localhost:{ARGO_PORT}"
-            ])
+            logger.info("使用快速隧道")
+            cmd_args = ["tunnel"]
+            cmd_args.extend(base_args)
+            cmd_args.extend(["--url", f"http://localhost:{ARGO_PORT}"])
+        
+        # 添加日志参数
+        cmd_args.extend([
+            "--logfile", str(boot_log_path),
+            "--loglevel", "info"
+        ])
         
         # 构建完整的命令
-        cmd = f"{bot_path} {' '.join(args)}"
-        logger.info(f"启动cloudflared命令: {cmd}")
+        cmd_list = [str(bot_path)] + cmd_args
+        cmd_str = ' '.join(cmd_list)
+        logger.info(f"启动cloudflared命令: {cmd_str}")
         
-        # 使用subprocess.Popen启动，确保可以捕获输出
+        # 使用subprocess.Popen启动
         try:
             process = subprocess.Popen(
-                cmd,
-                shell=True,
+                cmd_list,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -523,7 +526,7 @@ uuid: {UUID}"""
                         if line:
                             logger.info(f"[cloudflared] {line}")
                             # 检查是否有域名输出
-                            if 'trycloudflare.com' in line or 'https://' in line or '.cfargotunnel.com' in line:
+                            if any(domain in line for domain in ['trycloudflare.com', 'https://', '.cfargotunnel.com']):
                                 logger.info(f"找到隧道信息: {line}")
                 except Exception as e:
                     logger.error(f"读取cloudflared输出时出错: {e}")
@@ -532,6 +535,7 @@ uuid: {UUID}"""
             
             logger.info(f"{bot_name} 运行中")
             time.sleep(8)  # 给cloudflared更多启动时间
+            
         except Exception as e:
             logger.error(f"启动cloudflared失败: {e}")
             # 尝试回退到快速隧道
@@ -583,13 +587,23 @@ ingress:
                 logger.info('隧道YAML配置生成成功')
                 logger.info(f'隧道ID: {tunnel_id}')
                 logger.info(f'隧道配置文件: {tunnel_yaml_path}')
+                
+                # 验证配置文件
+                if tunnel_yaml_path.exists():
+                    logger.info("隧道配置文件验证成功")
+                    with open(tunnel_yaml_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    logger.debug(f"配置文件内容:\n{content}")
+                else:
+                    logger.error("隧道配置文件创建失败")
+                    
             except json.JSONDecodeError as e:
                 logger.error(f"ARGO_AUTH不是有效的JSON格式: {e}")
                 return
         except Exception as e:
             logger.error(f'生成隧道配置错误: {e}')
     else:
-        logger.info("ARGO_AUTH 不是TunnelSecret格式，使用token连接隧道")
+        logger.info("ARGO_AUTH 不是TunnelSecret格式")
 
 def download_monitor_script():
     """下载监控脚本"""
@@ -663,7 +677,9 @@ def extract_domains():
             time.sleep(5)
             if boot_log_path.exists():
                 return extract_domains()
-            return
+            else:
+                logger.error("boot.log 文件仍未创建，可能cloudflared启动失败")
+                return
         
         with open(boot_log_path, 'r', encoding='utf-8') as f:
             content = f.read()
@@ -679,17 +695,24 @@ def extract_domains():
         import re
         # 尝试多种模式匹配域名
         patterns = [
-            r'https?://([^ ]*trycloudflare\.com)',
             r'https?://([^ \n]*\.trycloudflare\.com)',
             r'https?://([^ ]*\.cfargotunnel\.com)',
             r'at\s+(https?://[^ ]*\.(?:trycloudflare\.com|cfargotunnel\.com))',
-            r'(https?://[^ ]*\.(?:trycloudflare\.com|cfargotunnel\.com))'
+            r'(\S+\.trycloudflare\.com)',
+            r'(\S+\.cfargotunnel\.com)'
         ]
         
         for pattern in patterns:
             matches = re.findall(pattern, content)
             if matches:
                 argo_domain = matches[0]
+                # 确保域名包含协议
+                if not argo_domain.startswith('http'):
+                    argo_domain = f'https://{argo_domain}'
+                # 提取域名部分（去掉协议）
+                if '://' in argo_domain:
+                    argo_domain = argo_domain.split('://')[1]
+                
                 logger.info(f'找到域名: {argo_domain}')
                 generate_links(argo_domain)
                 return
@@ -710,6 +733,13 @@ def extract_domains():
                 matches = re.findall(pattern, content)
                 if matches:
                     argo_domain = matches[0]
+                    # 确保域名包含协议
+                    if not argo_domain.startswith('http'):
+                        argo_domain = f'https://{argo_domain}'
+                    # 提取域名部分（去掉协议）
+                    if '://' in argo_domain:
+                        argo_domain = argo_domain.split('://')[1]
+                    
                     logger.info(f'重试找到域名: {argo_domain}')
                     generate_links(argo_domain)
                     return

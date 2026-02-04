@@ -11,6 +11,7 @@ import signal
 import logging
 import asyncio
 import aiohttp
+import re
 from pathlib import Path
 from aiohttp import web
 from urllib.parse import urlparse, quote, urlencode
@@ -366,8 +367,44 @@ def run_process(cmd, detach=False):
         logger.error(f"运行命令 {cmd} 出错: {e}")
         return None
 
+def argo_type():
+    """配置Argo隧道类型 - 与Node.js保持一致"""
+    if not ARGO_AUTH or not ARGO_DOMAIN:
+        logger.info("ARGO_DOMAIN 或 ARGO_AUTH 为空，使用快速隧道")
+        return
+    
+    if 'TunnelSecret' in ARGO_AUTH:
+        try:
+            # 写入隧道JSON
+            with open(tunnel_json_path, 'w', encoding='utf-8') as f:
+                f.write(ARGO_AUTH)
+            
+            # 解析隧道配置
+            tunnel_config = json.loads(ARGO_AUTH)
+            tunnel_id = tunnel_config.get('TunnelID', '')
+            
+            # 生成YAML配置
+            tunnel_yaml = f"""tunnel: {tunnel_id}
+credentials-file: {tunnel_json_path}
+protocol: http2
+
+ingress:
+  - hostname: {ARGO_DOMAIN}
+    service: http://localhost:{ARGO_PORT}
+    originRequest:
+      noTLSVerify: true
+  - service: http_status:404
+"""
+            with open(tunnel_yaml_path, 'w', encoding='utf-8') as f:
+                f.write(tunnel_yaml)
+            logger.info('隧道YAML配置生成成功')
+        except Exception as e:
+            logger.error(f'生成隧道配置错误: {e}')
+    else:
+        logger.info("ARGO_AUTH 不是TunnelSecret格式，使用token连接隧道")
+
 def download_files_and_run():
-    """下载并运行依赖文件"""
+    """下载并运行依赖文件 - 与Node.js保持一致"""
     architecture = get_system_architecture()
     files_to_download = get_files_for_architecture(architecture)
     
@@ -444,166 +481,59 @@ uuid: {UUID}"""
     logger.info(f"{web_name} 运行中")
     time.sleep(1)
     
-    # 运行cloudflared
+    # 运行cloudflared - 与Node.js逻辑完全一致
     if bot_path.exists():
-        # 先清除旧的boot.log文件
-        if boot_log_path.exists():
-            boot_log_path.unlink(missing_ok=True)
+        args = ["tunnel", "--edge-ip-version", "auto", "--no-autoupdate", "--protocol", "http2"]
         
-        # 基础参数
-        base_args = [
-            "--edge-ip-version", "auto",
-            "--no-autoupdate",
-            "--protocol", "http2"
-        ]
-        
-        # 根据认证类型构建不同的命令
-        if ARGO_AUTH and ARGO_AUTH.strip():
-            # 首先检查是否是有效的Token格式（120-250字符）
-            if 120 <= len(ARGO_AUTH.strip()) <= 250 and 'TunnelSecret' not in ARGO_AUTH:
-                # Token格式的认证
-                logger.info("使用Token连接隧道")
-                # Token格式: cloudflared tunnel run --token <token>
-                cmd_args = ["tunnel", "run", "--token", ARGO_AUTH.strip()]
-                cmd_args.extend(base_args)
-                
-            elif 'TunnelSecret' in ARGO_AUTH:
-                # TunnelSecret格式
-                logger.info("使用JSON隧道凭证连接隧道")
-                
-                # 确保隧道配置文件存在
-                if not tunnel_yaml_path.exists():
-                    logger.error("隧道配置文件不存在")
-                    # 回退到快速隧道
-                    cmd_args = ["tunnel"]
-                    cmd_args.extend(base_args)
-                    cmd_args.extend(["--url", f"http://localhost:{ARGO_PORT}"])
-                else:
-                    # TunnelSecret格式: cloudflared tunnel --config config.yml run
-                    cmd_args = ["tunnel", "--config", str(tunnel_yaml_path), "run"]
-                    cmd_args.extend(base_args)
+        # 检查ARGO_AUTH格式 - 与Node.js完全一致
+        if ARGO_AUTH and re.match(r'^[A-Z0-9a-z=]{120,250}$', ARGO_AUTH):
+            # token格式（长度120-250的base64字符）
+            logger.info("使用Token连接隧道")
+            args.extend(["run", "--token", ARGO_AUTH])
+        elif ARGO_AUTH and 'TunnelSecret' in ARGO_AUTH:
+            # TunnelSecret格式 - 确保配置文件存在
+            if not tunnel_yaml_path.exists():
+                logger.info("等待隧道配置文件生成...")
+                time.sleep(1)
+            
+            if tunnel_yaml_path.exists():
+                logger.info(f"使用配置文件连接隧道: {tunnel_yaml_path}")
+                args.extend(["--config", str(tunnel_yaml_path), "run"])
             else:
-                # 其他情况，使用快速隧道
-                logger.info("使用快速隧道")
-                cmd_args = ["tunnel"]
-                cmd_args.extend(base_args)
-                cmd_args.extend(["--url", f"http://localhost:{ARGO_PORT}"])
+                # 配置文件不存在，回退到快速隧道
+                logger.warning("隧道配置文件不存在，使用快速隧道")
+                args.extend([
+                    "--logfile", str(boot_log_path),
+                    "--loglevel", "info",
+                    "--url", f"http://localhost:{ARGO_PORT}"
+                ])
         else:
             # 快速隧道
-            logger.info("使用快速隧道")
-            cmd_args = ["tunnel"]
-            cmd_args.extend(base_args)
-            cmd_args.extend(["--url", f"http://localhost:{ARGO_PORT}"])
+            logger.info(f"使用快速隧道，端口: {ARGO_PORT}")
+            args.extend([
+                "--logfile", str(boot_log_path),
+                "--loglevel", "info",
+                "--url", f"http://localhost:{ARGO_PORT}"
+            ])
         
-        # 添加日志参数
-        cmd_args.extend([
-            "--logfile", str(boot_log_path),
-            "--loglevel", "info"
-        ])
+        # 构建命令并运行
+        cmd = f"{bot_path} {' '.join(args)}"
+        logger.info(f"启动cloudflared: {bot_name}")
         
-        # 构建完整的命令
-        cmd_list = [str(bot_path)] + cmd_args
-        cmd_str = ' '.join(cmd_list)
-        logger.info(f"启动cloudflared命令: {cmd_str}")
-        
-        # 使用subprocess.Popen启动
         try:
             process = subprocess.Popen(
-                cmd_list,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-                universal_newlines=True
+                cmd,
+                shell=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True
             )
             process_manager.add_process(process)
-            
-            # 启动一个线程来读取输出
-            def read_output():
-                try:
-                    for line in process.stdout:
-                        line = line.strip()
-                        if line:
-                            logger.info(f"[cloudflared] {line}")
-                            # 检查是否有域名输出
-                            if any(domain in line for domain in ['trycloudflare.com', 'https://', '.cfargotunnel.com']):
-                                logger.info(f"找到隧道信息: {line}")
-                except Exception as e:
-                    logger.error(f"读取cloudflared输出时出错: {e}")
-            
-            threading.Thread(target=read_output, daemon=True).start()
-            
             logger.info(f"{bot_name} 运行中")
-            time.sleep(8)  # 给cloudflared更多启动时间
-            
         except Exception as e:
             logger.error(f"启动cloudflared失败: {e}")
-            # 尝试回退到快速隧道
-            logger.info("尝试回退到快速隧道...")
-            quick_cmd = f"{bot_path} tunnel --edge-ip-version auto --no-autoupdate --protocol http2 --logfile {boot_log_path} --loglevel info --url http://localhost:{ARGO_PORT}"
-            run_process(quick_cmd, detach=True)
-            logger.info(f"{bot_name} 运行中（快速隧道）")
-            time.sleep(5)
     
     time.sleep(2)
-
-def argo_type():
-    """配置Argo隧道类型"""
-    if not ARGO_AUTH or not ARGO_DOMAIN:
-        logger.info("ARGO_DOMAIN 或 ARGO_AUTH 为空，使用快速隧道")
-        return
-    
-    if 'TunnelSecret' in ARGO_AUTH:
-        try:
-            # 解析隧道配置
-            try:
-                tunnel_config = json.loads(ARGO_AUTH)
-                tunnel_id = tunnel_config.get('TunnelID', '')
-                account_tag = tunnel_config.get('AccountTag', '')
-                
-                if not tunnel_id or not account_tag:
-                    logger.error("TunnelSecret缺少必要字段: TunnelID 或 AccountTag")
-                    return
-                    
-                # 写入隧道JSON文件
-                with open(tunnel_json_path, 'w', encoding='utf-8') as f:
-                    f.write(ARGO_AUTH)
-                logger.info(f"隧道JSON文件已保存: {tunnel_json_path}")
-                
-                # 生成YAML配置
-                tunnel_yaml = f"""tunnel: {tunnel_id}
-credentials-file: {tunnel_json_path}
-protocol: http2
-
-ingress:
-  - hostname: {ARGO_DOMAIN}
-    service: http://localhost:{ARGO_PORT}
-    originRequest:
-      noTLSVerify: true
-  - service: http_status:404
-"""
-                with open(tunnel_yaml_path, 'w', encoding='utf-8') as f:
-                    f.write(tunnel_yaml)
-                logger.info('隧道YAML配置生成成功')
-                logger.info(f'隧道ID: {tunnel_id}')
-                logger.info(f'隧道配置文件: {tunnel_yaml_path}')
-                
-                # 验证配置文件
-                if tunnel_yaml_path.exists():
-                    logger.info("隧道配置文件验证成功")
-                    with open(tunnel_yaml_path, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                    logger.debug(f"配置文件内容:\n{content}")
-                else:
-                    logger.error("隧道配置文件创建失败")
-                    
-            except json.JSONDecodeError as e:
-                logger.error(f"ARGO_AUTH不是有效的JSON格式: {e}")
-                return
-        except Exception as e:
-            logger.error(f'生成隧道配置错误: {e}')
-    else:
-        logger.info("ARGO_AUTH 不是TunnelSecret格式")
 
 def download_monitor_script():
     """下载监控脚本"""
@@ -664,7 +594,7 @@ def extract_domains():
     global argo_domain
     
     # 如果是固定隧道，直接使用配置的域名
-    if ARGO_AUTH and ARGO_DOMAIN and 'TunnelSecret' in ARGO_AUTH:
+    if ARGO_AUTH and ARGO_DOMAIN:
         argo_domain = ARGO_DOMAIN
         logger.info(f'使用固定域名: {argo_domain}')
         generate_links(argo_domain)
@@ -673,81 +603,45 @@ def extract_domains():
     # 否则从日志中提取临时域名
     try:
         if not boot_log_path.exists():
-            logger.error("boot.log 文件不存在，等待5秒...")
+            logger.error("boot.log 文件不存在")
+            # 等待5秒后重试
             time.sleep(5)
             if boot_log_path.exists():
                 return extract_domains()
             else:
-                logger.error("boot.log 文件仍未创建，可能cloudflared启动失败")
+                logger.error("等待后boot.log仍不存在，可能隧道启动失败")
                 return
         
-        with open(boot_log_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-        
-        # 如果内容为空，等待更多时间
-        if not content.strip():
-            logger.info("boot.log文件为空，等待更多时间...")
-            time.sleep(5)
-            if boot_log_path.exists():
+        # 读取日志文件
+        max_attempts = 10
+        for attempt in range(max_attempts):
+            try:
                 with open(boot_log_path, 'r', encoding='utf-8') as f:
                     content = f.read()
-        
-        import re
-        # 尝试多种模式匹配域名
-        patterns = [
-            r'https?://([^ \n]*\.trycloudflare\.com)',
-            r'https?://([^ ]*\.cfargotunnel\.com)',
-            r'at\s+(https?://[^ ]*\.(?:trycloudflare\.com|cfargotunnel\.com))',
-            r'(\S+\.trycloudflare\.com)',
-            r'(\S+\.cfargotunnel\.com)'
-        ]
-        
-        for pattern in patterns:
-            matches = re.findall(pattern, content)
-            if matches:
-                argo_domain = matches[0]
-                # 确保域名包含协议
-                if not argo_domain.startswith('http'):
-                    argo_domain = f'https://{argo_domain}'
-                # 提取域名部分（去掉协议）
-                if '://' in argo_domain:
-                    argo_domain = argo_domain.split('://')[1]
                 
-                logger.info(f'找到域名: {argo_domain}')
-                generate_links(argo_domain)
-                return
-        
-        # 如果没找到域名，记录日志内容以便调试
-        logger.warning(f'未找到域名，日志内容前500字符: {content[:500]}...')
-        
-        # 等待并重试
-        logger.info('未找到域名，等待10秒后重试...')
-        time.sleep(10)
-        
-        # 重新读取日志
-        if boot_log_path.exists():
-            with open(boot_log_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-            
-            for pattern in patterns:
+                # 查找域名 - 使用简单的正则表达式
+                pattern = r'https?://([^ \n]*trycloudflare\.com)'
                 matches = re.findall(pattern, content)
+                
                 if matches:
                     argo_domain = matches[0]
-                    # 确保域名包含协议
-                    if not argo_domain.startswith('http'):
-                        argo_domain = f'https://{argo_domain}'
-                    # 提取域名部分（去掉协议）
-                    if '://' in argo_domain:
-                        argo_domain = argo_domain.split('://')[1]
-                    
-                    logger.info(f'重试找到域名: {argo_domain}')
+                    logger.info(f'找到临时域名: {argo_domain}')
                     generate_links(argo_domain)
                     return
+                
+                # 如果没找到，等待一下再重试
+                if attempt < max_attempts - 1:
+                    logger.info(f'未找到域名，等待3秒后重试 ({attempt + 1}/{max_attempts})')
+                    time.sleep(3)
+                    
+            except Exception as e:
+                logger.error(f'读取boot.log错误: {e}')
+                break
         
-        logger.error('未找到Argo隧道域名，请检查cloudflared日志')
+        logger.error(f'经过{max_attempts}次尝试仍未找到域名')
         
     except Exception as e:
-        logger.error(f'读取boot.log错误: {e}')
+        logger.error(f'提取域名过程中出错: {e}')
 
 def kill_bot_process():
     """停止bot进程"""
@@ -1229,7 +1123,7 @@ def start_server():
     
     # 等待隧道启动
     logger.info('等待隧道启动...')
-    time.sleep(8)  # 增加等待时间
+    time.sleep(5)
     
     extract_domains()
     add_visit_task()

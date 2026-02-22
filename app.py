@@ -14,10 +14,6 @@ import aiohttp
 import re
 from pathlib import Path
 from aiohttp import web
-from urllib.parse import urlparse, quote, urlencode
-import yaml
-import uuid as uuid_module
-import requests
 
 # 设置日志 - 中文
 logging.basicConfig(
@@ -53,42 +49,97 @@ file_path = Path(FILE_PATH)
 file_path.mkdir(exist_ok=True, parents=True)
 logger.info(f"创建文件夹: {FILE_PATH}")
 
-# 全局变量
-monitor_process = None
-processes = []
-sub_txt = ""
+# 全局变量（使用锁保护）
+global_lock = threading.Lock()
 argo_domain = ""
 sub_encoded = ""
-app_started = False
-
-# 用于统计连接
 connection_counter = {
     "vless-argo": 0,
     "vmess-argo": 0,
     "trojan-argo": 0,
     "total": 0
 }
+# 异步计数器保护锁
+async_counter_lock = asyncio.Lock()
 
-class ProcessManager:
+# 初始化状态标志
+init_success = False
+init_failed_event = threading.Event()
+
+# 进程监控器
+class ProcessMonitor:
     def __init__(self):
-        self.processes = []
-    
-    def add_process(self, process):
-        self.processes.append(process)
-    
-    def cleanup(self):
-        for process in self.processes:
-            try:
-                if process.poll() is None:  # 进程还在运行
-                    process.terminate()
-                    try:
-                        process.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        process.kill()
-            except Exception as e:
-                logger.error(f"杀死进程时出错: {e}")
+        self.processes = []  # 普通进程（不自动重启）
+        self.watchdogs = {}   # {name: (process, restart_flag)}
+        self.lock = threading.Lock()
 
-process_manager = ProcessManager()
+    def add_process(self, process):
+        """添加不需要自动重启的进程"""
+        with self.lock:
+            self.processes.append(process)
+
+    def add_watchdog(self, name, cmd, restart=True):
+        """添加需要监控的进程（自动重启）"""
+        def watchdog_thread():
+            while True:
+                try:
+                    logger.info(f"启动监控进程: {name}")
+                    process = subprocess.Popen(
+                        cmd,
+                        shell=True,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True
+                    )
+                    with self.lock:
+                        self.watchdogs[name] = (process, restart)
+                    process.wait()  # 等待进程退出
+                    exit_code = process.returncode
+                    logger.warning(f"进程 {name} 退出，退出码: {exit_code}")
+                    if not restart:
+                        break
+                    logger.info(f"进程 {name} 将在5秒后重启")
+                    time.sleep(5)
+                except Exception as e:
+                    logger.error(f"监控进程 {name} 出错: {e}")
+                    if restart:
+                        time.sleep(5)
+        thread = threading.Thread(target=watchdog_thread, daemon=True)
+        thread.start()
+
+    def stop_all(self):
+        """停止所有进程"""
+        with self.lock:
+            # 复制键列表，避免遍历时修改字典
+            watchdogs_items = list(self.watchdogs.items())
+            processes_copy = list(self.processes)
+            self.watchdogs.clear()
+            self.processes.clear()
+        
+        # 停止监控进程
+        for name, (proc, _) in watchdogs_items:
+            try:
+                if proc.poll() is None:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+            except Exception as e:
+                logger.error(f"停止进程 {name} 出错: {e}")
+        # 停止普通进程
+        for proc in processes_copy:
+            try:
+                if proc.poll() is None:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+            except Exception as e:
+                logger.error(f"停止进程出错: {e}")
+
+process_monitor = ProcessMonitor()
 
 def generate_random_name(length=6):
     """生成随机文件名"""
@@ -296,22 +347,23 @@ def generate_config():
 
 def get_system_architecture():
     """获取系统架构"""
-    arch = os.uname().machine.lower() if hasattr(os, 'uname') else os.environ.get('HOSTTYPE', '')
+    try:
+        arch = os.uname().machine.lower()
+    except AttributeError:
+        arch = os.environ.get('HOSTTYPE', '').lower()
     if 'arm' in arch or 'aarch64' in arch:
         return 'arm'
     return 'amd'
 
 def download_file(url, filepath):
-    """下载文件"""
+    """下载文件（使用with确保连接释放）"""
     try:
-        response = requests.get(url, stream=True, timeout=30)
-        response.raise_for_status()
-        
-        with open(filepath, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
-        
+        with requests.get(url, stream=True, timeout=30) as response:
+            response.raise_for_status()
+            with open(filepath, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
         # 设置可执行权限
         filepath.chmod(0o755)
         logger.info(f"下载 {filepath.name} 成功")
@@ -346,10 +398,9 @@ def get_files_for_architecture(architecture):
     return base_files
 
 def run_process(cmd, detach=False):
-    """运行进程"""
+    """运行进程（不监控重启）"""
     try:
         if detach:
-            # 分离进程运行
             process = subprocess.Popen(
                 cmd,
                 shell=True,
@@ -357,10 +408,9 @@ def run_process(cmd, detach=False):
                 stderr=subprocess.DEVNULL,
                 start_new_session=True
             )
-            process_manager.add_process(process)
+            process_monitor.add_process(process)
             return process
         else:
-            # 阻塞运行
             result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
             return result
     except Exception as e:
@@ -404,18 +454,22 @@ ingress:
         logger.info("ARGO_AUTH 不是TunnelSecret格式，使用token连接隧道")
 
 def download_files_and_run():
-    """下载并运行依赖文件 - 与Node.js保持一致"""
+    """下载并运行依赖文件 - 健壮性增强"""
+    global init_success
     architecture = get_system_architecture()
     files_to_download = get_files_for_architecture(architecture)
     
     if not files_to_download:
         logger.error("找不到适合当前架构的文件")
+        init_failed_event.set()
         return
     
-    # 下载文件
+    # 下载文件，关键文件失败则设置失败标志并清理已启动进程
     for filepath, url in files_to_download:
         if not download_file(url, filepath):
-            logger.error(f"下载 {filepath.name} 失败")
+            logger.error(f"下载 {filepath.name} 失败，初始化失败")
+            process_monitor.stop_all()  # 停止所有已启动的进程
+            init_failed_event.set()
             return
     
     # 运行哪吒监控
@@ -481,59 +535,34 @@ uuid: {UUID}"""
     logger.info(f"{web_name} 运行中")
     time.sleep(1)
     
-    # 运行cloudflared - 与Node.js逻辑完全一致
+    # 运行cloudflared - 使用监控进程实现自动重启
     if bot_path.exists():
         args = ["tunnel", "--edge-ip-version", "auto", "--no-autoupdate", "--protocol", "http2"]
         
-        # 检查ARGO_AUTH格式 - 与Node.js完全一致
+        # 检查ARGO_AUTH格式
         if ARGO_AUTH and re.match(r'^[A-Z0-9a-z=]{120,250}$', ARGO_AUTH):
-            # token格式（长度120-250的base64字符）
             logger.info("使用Token连接隧道")
             args.extend(["run", "--token", ARGO_AUTH])
         elif ARGO_AUTH and 'TunnelSecret' in ARGO_AUTH:
-            # TunnelSecret格式 - 确保配置文件存在
             if not tunnel_yaml_path.exists():
                 logger.info("等待隧道配置文件生成...")
                 time.sleep(1)
-            
             if tunnel_yaml_path.exists():
                 logger.info(f"使用配置文件连接隧道: {tunnel_yaml_path}")
                 args.extend(["--config", str(tunnel_yaml_path), "run"])
             else:
-                # 配置文件不存在，回退到快速隧道
                 logger.warning("隧道配置文件不存在，使用快速隧道")
-                args.extend([
-                    "--logfile", str(boot_log_path),
-                    "--loglevel", "info",
-                    "--url", f"http://localhost:{ARGO_PORT}"
-                ])
+                args.extend(["--logfile", str(boot_log_path), "--loglevel", "info", "--url", f"http://localhost:{ARGO_PORT}"])
         else:
-            # 快速隧道
             logger.info(f"使用快速隧道，端口: {ARGO_PORT}")
-            args.extend([
-                "--logfile", str(boot_log_path),
-                "--loglevel", "info",
-                "--url", f"http://localhost:{ARGO_PORT}"
-            ])
+            args.extend(["--logfile", str(boot_log_path), "--loglevel", "info", "--url", f"http://localhost:{ARGO_PORT}"])
         
-        # 构建命令并运行
         cmd = f"{bot_path} {' '.join(args)}"
-        logger.info(f"启动cloudflared: {bot_name}")
-        
-        try:
-            process = subprocess.Popen(
-                cmd,
-                shell=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True
-            )
-            process_manager.add_process(process)
-            logger.info(f"{bot_name} 运行中")
-        except Exception as e:
-            logger.error(f"启动cloudflared失败: {e}")
+        logger.info(f"启动cloudflared监控进程: {bot_name}")
+        process_monitor.add_watchdog("cloudflared", cmd, restart=True)
     
     time.sleep(2)
+    init_success = True
 
 def download_monitor_script():
     """下载监控脚本"""
@@ -545,12 +574,10 @@ def download_monitor_script():
     logger.info(f"从 {monitor_url} 下载监控脚本")
     
     try:
-        response = requests.get(monitor_url, timeout=30)
-        response.raise_for_status()
-        
-        with open(monitor_path, 'wb') as f:
-            f.write(response.content)
-        
+        with requests.get(monitor_url, timeout=30) as response:
+            response.raise_for_status()
+            with open(monitor_path, 'wb') as f:
+                f.write(response.content)
         monitor_path.chmod(0o755)
         logger.info("监控脚本下载完成")
         return True
@@ -581,9 +608,7 @@ def run_monitor_script():
             start_new_session=True
         )
         
-        global monitor_process
-        monitor_process = process
-        
+        process_monitor.add_process(process)
         logger.info("监控脚本已启动")
         
     except Exception as e:
@@ -595,8 +620,9 @@ def extract_domains():
     
     # 如果是固定隧道，直接使用配置的域名
     if ARGO_AUTH and ARGO_DOMAIN:
-        argo_domain = ARGO_DOMAIN
-        logger.info(f'使用固定域名: {argo_domain}')
+        with global_lock:
+            argo_domain = ARGO_DOMAIN
+        logger.info(f'使用固定域名: {ARGO_DOMAIN}')
         generate_links(argo_domain)
         return
     
@@ -624,7 +650,8 @@ def extract_domains():
                 matches = re.findall(pattern, content)
                 
                 if matches:
-                    argo_domain = matches[0]
+                    with global_lock:
+                        argo_domain = matches[0]
                     logger.info(f'找到临时域名: {argo_domain}')
                     generate_links(argo_domain)
                     return
@@ -643,52 +670,33 @@ def extract_domains():
     except Exception as e:
         logger.error(f'提取域名过程中出错: {e}')
 
-def kill_bot_process():
-    """停止bot进程"""
-    try:
-        if sys.platform == 'win32':
-            subprocess.run(f"taskkill /f /im {bot_name}.exe", 
-                          shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        else:
-            subprocess.run(f"pkill -f '[{bot_name[0]}]{bot_name[1:]}'",
-                          shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except Exception:
-        pass  # 忽略错误
-
 def get_meta_info_sync():
-    """获取ISP信息（同步版本）- 根据Node.js代码修复"""
+    """获取ISP信息（同步版本）"""
     try:
-        # 尝试第一个API: ipapi.co
-        response1 = requests.get('https://ipapi.co/json/', timeout=5)
-        if response1.status_code == 200:
-            data1 = response1.json()
-            country_code = data1.get('country_code')
-            org = data1.get('org')
-            if country_code and org:
-                # 清理org名称，移除特殊字符
-                org_clean = org.replace(' ', '_').replace('.', '_').replace(',', '_')
-                return f"{country_code}_{org_clean}"
-    except Exception as e:
-        logger.debug(f"ipapi.co请求失败: {e}")
-        pass
-    
-    try:
-        # 尝试第二个API: ip-api.com
-        response2 = requests.get('http://ip-api.com/json/', timeout=5)
-        if response2.status_code == 200:
-            data2 = response2.json()
-            if data2.get('status') == 'success':
-                country_code = data2.get('countryCode')
-                org = data2.get('org')
+        with requests.get('https://ipapi.co/json/', timeout=5) as response1:
+            if response1.status_code == 200:
+                data1 = response1.json()
+                country_code = data1.get('country_code')
+                org = data1.get('org')
                 if country_code and org:
-                    # 清理org名称，移除特殊字符
                     org_clean = org.replace(' ', '_').replace('.', '_').replace(',', '_')
                     return f"{country_code}_{org_clean}"
     except Exception as e:
-        logger.debug(f"ip-api.com请求失败: {e}")
-        pass
+        logger.debug(f"ipapi.co请求失败: {e}")
     
-    # 如果两个API都失败了，尝试获取主机名作为备用方案
+    try:
+        with requests.get('http://ip-api.com/json/', timeout=5) as response2:
+            if response2.status_code == 200:
+                data2 = response2.json()
+                if data2.get('status') == 'success':
+                    country_code = data2.get('countryCode')
+                    org = data2.get('org')
+                    if country_code and org:
+                        org_clean = org.replace(' ', '_').replace('.', '_').replace(',', '_')
+                        return f"{country_code}_{org_clean}"
+    except Exception as e:
+        logger.debug(f"ip-api.com请求失败: {e}")
+    
     try:
         import socket
         hostname = socket.gethostname()
@@ -699,16 +707,15 @@ def get_meta_info_sync():
     return 'Unknown'
 
 def generate_links(domain):
-    """生成订阅链接 - 根据Node.js代码修复"""
-    global sub_txt, argo_domain, sub_encoded
+    """生成订阅链接"""
+    global sub_encoded
     
-    argo_domain = domain
+    with global_lock:
+        argo_domain = domain
     
-    # 使用同步函数获取ISP信息
     ISP = get_meta_info_sync()
     logger.info(f"获取到ISP信息: {ISP}")
     
-    # 节点名称生成逻辑与Node.js一致
     if NAME:
         node_name = f"{NAME}-{ISP}"
     else:
@@ -716,7 +723,6 @@ def generate_links(domain):
     
     logger.info(f"节点名称: {node_name}")
     
-    # 生成VMESS配置 - 完全按照Node.js格式
     vmess_config = {
         "v": "2",
         "ps": node_name,
@@ -735,42 +741,29 @@ def generate_links(domain):
         "fp": "firefox"
     }
     
-    # 确保JSON格式与Node.js一致（没有额外的空格）
     vmess_json = json.dumps(vmess_config, separators=(',', ':'))
     vmess_base64 = base64.b64encode(vmess_json.encode()).decode()
     
-    # 生成三种协议的配置 - 完全按照Node.js格式
-    # VLESS配置
     vless_config = f"vless://{UUID}@{CFIP}:{CFPORT}?encryption=none&security=tls&sni={argo_domain}&fp=firefox&type=ws&host={argo_domain}&path=%2Fvless-argo%3Fed%3D2560#{node_name}"
-    
-    # VMESS配置
     vmess_config_url = f"vmess://{vmess_base64}"
-    
-    # Trojan配置
     trojan_config = f"trojan://{UUID}@{CFIP}:{CFPORT}?security=tls&sni={argo_domain}&fp=firefox&type=ws&host={argo_domain}&path=%2Ftrojan-argo%3Fed%3D2560#{node_name}"
     
-    # 组合订阅内容 - 与Node.js格式完全一致
     sub_txt = f"{vless_config}\n\n{vmess_config_url}\n\n{trojan_config}"
     
-    # 将订阅内容进行base64编码
-    sub_encoded = base64.b64encode(sub_txt.encode()).decode()
+    with global_lock:
+        sub_encoded = base64.b64encode(sub_txt.encode()).decode()
     
-    # 打印base64编码的订阅内容到控制台（与Node.js行为一致）
     logger.info("订阅内容(base64编码):")
     print(sub_encoded)
     print("\n" + "="*60)
     
-    # 保存到文件
     with open(sub_path, 'w', encoding='utf-8') as f:
         f.write(sub_encoded)
     logger.info(f"订阅已保存到 {sub_path}")
     logger.info(f"节点域名: {argo_domain}")
     logger.info(f"节点名称: {node_name}")
     
-    # 上传节点
     upload_nodes()
-    
-    return sub_txt
 
 def upload_nodes():
     """上传节点或订阅"""
@@ -780,24 +773,21 @@ def upload_nodes():
             "subscription": [subscription_url]
         }
         try:
-            response = requests.post(
+            with requests.post(
                 f"{UPLOAD_URL}/api/add-subscriptions",
                 json=json_data,
                 headers={'Content-Type': 'application/json'},
                 timeout=10
-            )
-            if response.status_code == 200:
-                logger.info('订阅上传成功')
-                return response
-            else:
-                logger.error(f'订阅上传失败，状态码: {response.status_code}')
-                return None
+            ) as response:
+                if response.status_code == 200:
+                    logger.info('订阅上传成功')
+                else:
+                    logger.error(f'订阅上传失败，状态码: {response.status_code}')
         except Exception as e:
             logger.error(f'订阅上传失败: {e}')
-            return None
     elif UPLOAD_URL:
         if not list_path.exists():
-            return None
+            return
         
         try:
             with open(list_path, 'r', encoding='utf-8') as f:
@@ -807,72 +797,59 @@ def upload_nodes():
                     if any(proto in line for proto in ['vless://', 'vmess://', 'trojan://', 'hysteria2://', 'tuic://'])]
             
             if not nodes:
-                return None
+                return
             
             json_data = json.dumps({"nodes": nodes})
             
-            response = requests.post(
+            with requests.post(
                 f"{UPLOAD_URL}/api/add-nodes",
                 data=json_data,
                 headers={'Content-Type': 'application/json'},
                 timeout=10
-            )
-            if response.status_code == 200:
-                logger.info('节点上传成功')
-                return response
-            else:
-                logger.error(f'节点上传失败，状态码: {response.status_code}')
-                return None
+            ) as response:
+                if response.status_code == 200:
+                    logger.info('节点上传成功')
+                else:
+                    logger.error(f'节点上传失败，状态码: {response.status_code}')
         except Exception as e:
             logger.error(f'节点上传失败: {e}')
-            return None
-    else:
-        return None
 
-def clean_files():
-    """清理文件"""
-    def cleanup():
-        time.sleep(90)  # 90秒后清理
-        
-        files_to_delete = [boot_log_path, config_path, web_path, bot_path, monitor_path]
-        
-        if NEZHA_PORT:
-            files_to_delete.append(npm_path)
-        elif NEZHA_SERVER and NEZHA_KEY:
-            files_to_delete.append(php_path)
-        
-        # 删除文件
-        for file in files_to_delete:
-            try:
-                if file.exists():
-                    file.unlink()
-            except Exception:
-                pass  # 忽略错误
-        
-        logger.info('应用正在运行')
-        logger.info('感谢使用此脚本，享受吧！')
+def cleanup_files_on_exit():
+    """退出时清理临时文件"""
+    files_to_delete = [boot_log_path, config_path, web_path, bot_path, monitor_path, sub_path]
+    if NEZHA_PORT:
+        files_to_delete.append(npm_path)
+    elif NEZHA_SERVER and NEZHA_KEY:
+        files_to_delete.append(php_path)
     
-    # 在新线程中运行清理
-    threading.Thread(target=cleanup, daemon=True).start()
+    for file in files_to_delete:
+        try:
+            if file.exists():
+                file.unlink()
+                logger.debug(f"已删除临时文件: {file}")
+        except Exception as e:
+            logger.warning(f"删除文件失败 {file}: {e}")
+    logger.info("临时文件清理完成")
 
 def add_visit_task():
     """添加自动访问任务"""
     if not AUTO_ACCESS or not PROJECT_URL:
         logger.info("跳过自动访问任务")
-        return None
+        return
     
     try:
-        response = requests.post(
+        with requests.post(
             'https://oooo.serv00.net/add-url',
             json={'url': PROJECT_URL},
             headers={'Content-Type': 'application/json'},
             timeout=10
-        )
-        logger.info("自动访问任务添加成功")
-        return response
+        ) as response:
+            if response.status_code == 200:
+                logger.info("自动访问任务添加成功")
+            else:
+                logger.error(f"添加自动访问任务失败，状态码: {response.status_code}")
     except Exception as e:
         logger.error(f"添加自动访问任务失败: {e}")
-        return None
 
 async def handle_index(request):
     """处理根路由"""
@@ -885,13 +862,19 @@ async def handle_sub(request):
     """处理订阅路由"""
     global sub_encoded
     try:
-        if not sub_encoded:
+        # 读取全局变量（使用锁保护）
+        with global_lock:
+            encoded = sub_encoded
+        
+        if not encoded:
             # 如果没有订阅内容，尝试从文件读取
             try:
                 if sub_path.exists():
                     with open(sub_path, 'r', encoding='utf-8') as f:
-                        sub_encoded = f.read()
-                        logger.info(f"从文件读取订阅内容，长度: {len(sub_encoded)}")
+                        encoded = f.read()
+                        with global_lock:
+                            sub_encoded = encoded
+                        logger.info(f"从文件读取订阅内容，长度: {len(encoded)}")
                 else:
                     logger.warning("订阅文件不存在")
                     return web.Response(status=503, text="Subscription not ready yet. Please wait a moment and try again.")
@@ -899,48 +882,36 @@ async def handle_sub(request):
                 logger.error(f"读取订阅文件失败: {e}")
                 return web.Response(status=503, text="Subscription not ready yet. Please wait a moment and try again.")
         
-        # 验证sub_encoded是否为有效的base64
+        # 验证是否为有效的base64
         try:
-            test = base64.b64decode(sub_encoded)
-            logger.info(f"返回订阅内容，长度: {len(sub_encoded)}")
-            # 返回base64编码的内容
+            test = base64.b64decode(encoded)
+            logger.info(f"返回订阅内容，长度: {len(encoded)}")
             return web.Response(
-                text=sub_encoded,
+                text=encoded,
                 content_type='text/plain'
             )
         except Exception as e:
             logger.error(f"订阅内容base64解码失败: {e}")
-            # 如果base64解码失败，返回原始文本作为备份
-            if sub_txt:
-                return web.Response(
-                    text=sub_txt,
-                    content_type='text/plain'
-                )
-            else:
-                return web.Response(status=503, text="Subscription not ready yet. Please wait a moment and try again.")
+            return web.Response(status=500, text="Invalid subscription format")
     except Exception as e:
         logger.error(f"处理订阅请求时出错: {e}")
         return web.Response(status=500, text=f"Internal Server Error: {str(e)}")
 
 async def handle_stats(request):
     """处理统计信息"""
-    global connection_counter
-    
-    stats = {
-        "connections": connection_counter,
-        "timestamp": time.time(),
-        "status": "running"
-    }
-    
+    with global_lock:
+        stats = {
+            "connections": connection_counter.copy(),
+            "timestamp": time.time(),
+            "status": "running"
+        }
     return web.json_response(stats)
 
 async def proxy_xray_websocket(request):
-    """代理WebSocket请求到Xray - 高性能版本"""
-    # 提取路径
+    """代理WebSocket请求到Xray - 优化版本"""
     path = request.path
     query_string = request.query_string
     
-    # 根据路径确定目标端口
     if path.startswith('/vless-argo'):
         target_port = 3003
         connection_type = "vless-argo"
@@ -952,32 +923,28 @@ async def proxy_xray_websocket(request):
         connection_type = "trojan-argo"
     elif path in ['/vless', '/vmess', '/trojan']:
         target_port = 3001
-        connection_type = path[1:]  # 移除开头的/
+        connection_type = path[1:]
     else:
-        # 未知路径，返回404
         return web.Response(status=404, text="Path not found")
     
-    # 更新连接计数
-    connection_counter[connection_type] += 1
-    connection_counter["total"] += 1
+    # 增加连接计数（异步安全）
+    async with async_counter_lock:
+        with global_lock:
+            connection_counter[connection_type] += 1
+            connection_counter["total"] += 1
+            current_total = connection_counter["total"]
+            if current_total % 100 == 0:
+                logger.info(f"连接统计: VLESS={connection_counter['vless-argo']}, VMESS={connection_counter['vmess-argo']}, Trojan={connection_counter['trojan-argo']}, 总计={connection_counter['total']}")
     
-    # 每100个连接打印一次统计
-    if connection_counter["total"] % 100 == 0:
-        logger.info(f"连接统计: VLESS={connection_counter['vless-argo']}, VMESS={connection_counter['vmess-argo']}, Trojan={connection_counter['trojan-argo']}, 总计={connection_counter['total']}")
-    
-    # 构建目标URL
     target_url = f"ws://localhost:{target_port}{path}"
     if query_string:
         target_url += f"?{query_string}"
     
-    # 创建WebSocket响应
     ws = web.WebSocketResponse()
     await ws.prepare(request)
     
     try:
-        # 连接到目标WebSocket服务器
         async with aiohttp.ClientSession() as session:
-            # 设置简化的headers
             headers = {
                 'User-Agent': request.headers.get('User-Agent', ''),
                 'Origin': request.headers.get('Origin', ''),
@@ -990,7 +957,6 @@ async def proxy_xray_websocket(request):
                 timeout=30
             ) as target_ws:
                 
-                # 双向转发数据 - 使用简单的转发，不记录每条消息
                 client_to_target_task = asyncio.create_task(
                     forward_websocket_silent(ws, target_ws)
                 )
@@ -998,35 +964,32 @@ async def proxy_xray_websocket(request):
                     forward_websocket_silent(target_ws, ws)
                 )
                 
-                # 等待任意一个任务完成
                 done, pending = await asyncio.wait(
                     [client_to_target_task, target_to_client_task],
                     return_when=asyncio.FIRST_COMPLETED
                 )
                 
-                # 取消另一个任务
                 for task in pending:
                     task.cancel()
                 
-                # 等待被取消的任务结束
                 for task in pending:
                     try:
                         await task
                     except asyncio.CancelledError:
                         pass
-                        
     except Exception as e:
-        # 减少错误日志输出
-        pass
-    
-    # 连接关闭
-    connection_counter[connection_type] -= 1
-    connection_counter["total"] -= 1
+        logger.debug(f"WebSocket代理错误: {e}")
+    finally:
+        # 减少连接计数（异步安全）
+        async with async_counter_lock:
+            with global_lock:
+                connection_counter[connection_type] -= 1
+                connection_counter["total"] -= 1
     
     return ws
 
 async def forward_websocket_silent(source, target):
-    """静默转发WebSocket消息 - 不记录日志"""
+    """静默转发WebSocket消息"""
     try:
         async for msg in source:
             if msg.type == aiohttp.WSMsgType.TEXT:
@@ -1043,45 +1006,35 @@ async def forward_websocket_silent(source, target):
             elif msg.type == aiohttp.WSMsgType.ERROR:
                 break
     except Exception:
-        pass  # 忽略所有错误
+        pass
 
 async def proxy_xray_http(request):
-    """代理HTTP请求到Xray - 静默版本"""
-    # 提取路径和查询参数
+    """代理HTTP请求到Xray"""
     path = request.path
     query_string = request.query_string
     
-    # 根据路径确定目标端口
     if path in ['/vless', '/vmess', '/trojan']:
         target_port = 3001
     elif path.startswith('/vless-argo') or path.startswith('/vmess-argo') or path.startswith('/trojan-argo'):
-        target_port = 3001  # Xray会处理fallback到对应端口
+        target_port = 3001
     else:
-        # 不是Xray路径，返回404
         return web.Response(status=404, text="Path not found")
     
-    # 构建目标URL
     target_url = f"http://localhost:{target_port}{path}"
     if query_string:
         target_url += f"?{query_string}"
     
-    # 转发请求
     try:
-        # 获取原始请求的方法、头部和body
         method = request.method
         headers = dict(request.headers)
-        
-        # 移除不必要的头部
         headers.pop('Host', None)
         headers.pop('Content-Length', None)
         
-        # 读取请求body
         if request.can_read_body:
             body = await request.read()
         else:
             body = None
         
-        # 发送请求到目标服务器
         timeout = aiohttp.ClientTimeout(total=10)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.request(
@@ -1092,10 +1045,8 @@ async def proxy_xray_http(request):
                 allow_redirects=False
             ) as response:
                 
-                # 获取响应数据
                 resp_body = await response.read()
                 
-                # 创建响应
                 return web.Response(
                     body=resp_body,
                     status=response.status,
@@ -1111,7 +1062,6 @@ async def handle_health_check(request):
 
 def start_server():
     """启动服务器"""
-    global app_started
     logger.info('开始服务器初始化...')
     
     delete_nodes()
@@ -1121,46 +1071,45 @@ def start_server():
     generate_config()
     download_files_and_run()
     
-    # 等待隧道启动
+    if init_failed_event.is_set():
+        logger.error("初始化失败，退出")
+        return
+    
     logger.info('等待隧道启动...')
     time.sleep(5)
     
     extract_domains()
     add_visit_task()
     
-    app_started = True
     logger.info('服务器初始化完成')
 
 def signal_handler(signum, frame):
     """信号处理"""
     logger.info("收到关闭信号，正在清理...")
     
-    if monitor_process and monitor_process.poll() is None:
-        logger.info("停止监控脚本...")
-        monitor_process.terminate()
+    # 停止所有子进程
+    process_monitor.stop_all()
     
-    process_manager.cleanup()
+    # 清理临时文件
+    cleanup_files_on_exit()
+    
+    # 停止事件循环
+    loop = asyncio.get_event_loop()
+    if loop.is_running():
+        loop.stop()
     
     logger.info("程序退出")
-    sys.exit(0)
+    os._exit(0)  # 强制退出，避免残留
 
 async def init_app():
     """初始化aiohttp应用"""
     app = web.Application()
     
-    # 健康检查
     app.router.add_get('/health', handle_health_check)
-    
-    # 统计信息
     app.router.add_get('/stats', handle_stats)
-    
-    # 首页
     app.router.add_get('/', handle_index)
-    
-    # 订阅 - 使用环境变量中的SUB_PATH
     app.router.add_get(f'/{SUB_PATH}', handle_sub)
     
-    # WebSocket路由 - Xray流量
     xray_ws_paths = [
         '/vless-argo',
         '/vmess-argo', 
@@ -1173,7 +1122,6 @@ async def init_app():
     for path in xray_ws_paths:
         app.router.add_get(path, proxy_xray_websocket)
     
-    # 其他HTTP请求
     app.router.add_route('*', '/{path:.*}', proxy_xray_http)
     
     return app
@@ -1181,12 +1129,8 @@ async def init_app():
 async def start_aiohttp_server():
     """启动aiohttp服务器"""
     app = await init_app()
-    
-    # 创建运行器
     runner = web.AppRunner(app)
     await runner.setup()
-    
-    # 启动站点 - 监听所有地址的ARGO_PORT端口
     site = web.TCPSite(runner, '0.0.0.0', ARGO_PORT)
     await site.start()
     
@@ -1197,15 +1141,31 @@ async def start_aiohttp_server():
 
 def main():
     """主函数"""
+    # 检查依赖
+    try:
+        import requests
+        import aiohttp
+    except ImportError as e:
+        logger.error(f"缺少依赖库: {e}. 请运行: pip install requests aiohttp")
+        sys.exit(1)
+    
     # 注册信号处理
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
     
-    # 启动主服务（在新的线程中）
+    # 启动主服务
     server_thread = threading.Thread(target=start_server, daemon=True)
     server_thread.start()
     
-    # 启动监控脚本（在新的线程中，延迟10秒）
+    # 等待初始化结果（最多60秒）
+    if not init_failed_event.wait(timeout=60):
+        logger.error("初始化超时")
+        sys.exit(1)
+    if not init_success:
+        logger.error("初始化失败，退出")
+        sys.exit(1)
+    
+    # 启动监控脚本
     def start_monitor():
         time.sleep(10)
         if download_monitor_script():
@@ -1214,20 +1174,12 @@ def main():
     monitor_thread = threading.Thread(target=start_monitor, daemon=True)
     monitor_thread.start()
     
-    # 清理文件（在新的线程中）
-    clean_thread = threading.Thread(target=clean_files, daemon=True)
-    clean_thread.start()
-    
     # 启动aiohttp服务器
     try:
-        # 创建事件循环
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        
-        # 启动服务器
         runner = loop.run_until_complete(start_aiohttp_server())
         
-        # 运行服务器
         logger.info("服务器启动成功")
         print(f"\n{'='*60}")
         print(f"服务器运行在端口 {ARGO_PORT}")
@@ -1251,11 +1203,4 @@ def main():
         traceback.print_exc()
 
 if __name__ == '__main__':
-    # 确保requests库可用
-    try:
-        import requests
-    except ImportError:
-        logger.error("请安装requests库: pip install requests")
-        sys.exit(1)
-    
     main()

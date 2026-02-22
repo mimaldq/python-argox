@@ -10,10 +10,17 @@ import time
 import signal
 import logging
 import asyncio
-import aiohttp
 import re
 from pathlib import Path
 from aiohttp import web
+
+# 依赖检查：确保必要库已安装
+try:
+    import requests
+    import aiohttp
+except ImportError as e:
+    print(f"错误: 缺少依赖库 {e.name}，请运行: pip install requests aiohttp")
+    sys.exit(1)
 
 # 设置日志 - 中文
 logging.basicConfig(
@@ -1141,14 +1148,6 @@ async def start_aiohttp_server():
 
 def main():
     """主函数"""
-    # 检查依赖
-    try:
-        import requests
-        import aiohttp
-    except ImportError as e:
-        logger.error(f"缺少依赖库: {e}. 请运行: pip install requests aiohttp")
-        sys.exit(1)
-    
     # 注册信号处理
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)

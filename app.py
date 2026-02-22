@@ -43,7 +43,11 @@ NEZHA_PORT = os.getenv('NEZHA_PORT', '')
 NEZHA_KEY = os.getenv('NEZHA_KEY', '')
 ARGO_DOMAIN = os.getenv('ARGO_DOMAIN', '')
 ARGO_AUTH = os.getenv('ARGO_AUTH', '')
-ARGO_PORT = int(os.getenv('ARGO_PORT', '7860'))
+try:
+    ARGO_PORT = int(os.getenv('ARGO_PORT', '7860'))
+except ValueError:
+    logger.warning("ARGO_PORT 不是有效数字，使用默认值 7860")
+    ARGO_PORT = 7860
 CFIP = os.getenv('CFIP', 'cdns.doon.eu.org')
 CFPORT = os.getenv('CFPORT', '443')
 NAME = os.getenv('NAME', '')
@@ -71,7 +75,7 @@ async_counter_lock = asyncio.Lock()
 
 # 初始化状态标志
 init_success = False
-init_failed_event = threading.Event()
+init_done_event = threading.Event()   # 初始化完成事件（无论成功或失败）
 
 # 进程监控器
 class ProcessMonitor:
@@ -468,15 +472,15 @@ def download_files_and_run():
     
     if not files_to_download:
         logger.error("找不到适合当前架构的文件")
-        init_failed_event.set()
+        init_done_event.set()
         return
     
     # 下载文件，关键文件失败则设置失败标志并清理已启动进程
     for filepath, url in files_to_download:
         if not download_file(url, filepath):
             logger.error(f"下载 {filepath.name} 失败，初始化失败")
-            process_monitor.stop_all()  # 停止所有已启动的进程
-            init_failed_event.set()
+            process_monitor.stop_all()
+            init_done_event.set()
             return
     
     # 运行哪吒监控
@@ -1069,26 +1073,34 @@ async def handle_health_check(request):
 
 def start_server():
     """启动服务器"""
+    global init_success
     logger.info('开始服务器初始化...')
     
-    delete_nodes()
-    cleanup_old_files()
-    
-    argo_type()
-    generate_config()
-    download_files_and_run()
-    
-    if init_failed_event.is_set():
-        logger.error("初始化失败，退出")
-        return
-    
-    logger.info('等待隧道启动...')
-    time.sleep(5)
-    
-    extract_domains()
-    add_visit_task()
-    
-    logger.info('服务器初始化完成')
+    try:
+        delete_nodes()
+        cleanup_old_files()
+        
+        argo_type()
+        generate_config()
+        download_files_and_run()
+        
+        # 如果 download_files_and_run 已经设置了 init_done_event，则不再执行后续
+        if init_done_event.is_set() and not init_success:
+            return
+        
+        logger.info('等待隧道启动...')
+        time.sleep(5)
+        
+        extract_domains()
+        add_visit_task()
+        
+        logger.info('服务器初始化完成')
+        init_success = True
+    except Exception as e:
+        logger.error(f"初始化过程中发生异常: {e}")
+        init_success = False
+    finally:
+        init_done_event.set()
 
 def signal_handler(signum, frame):
     """信号处理"""
@@ -1157,7 +1169,7 @@ def main():
     server_thread.start()
     
     # 等待初始化结果（最多60秒）
-    if not init_failed_event.wait(timeout=60):
+    if not init_done_event.wait(timeout=60):
         logger.error("初始化超时")
         sys.exit(1)
     if not init_success:
